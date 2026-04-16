@@ -13,6 +13,7 @@ export { renderNakhwaFire }    from "./nakhwaFire.js";
 export { renderRingSpectrum }       from "./ringSpectrum.js";
 export { renderSongTitle }          from "./songTitle.js";
 export { renderPrismaticCollision } from "./prismaticCollision.js";
+export { renderBokehSparkle }       from "./bokehSparkle.js";
 
 import { renderLuminousDrift }      from "./dustParticles.js";
 import { renderSilkRibbons }        from "./harmonicWaves.js";
@@ -25,6 +26,7 @@ import { renderAmbientSpectrum }    from "./ambientSpectrum.js";
 import { renderNakhwaFire }         from "./nakhwaFire.js";
 import { renderRingSpectrum }       from "./ringSpectrum.js";
 import { renderPrismaticCollision } from "./prismaticCollision.js";
+import { renderBokehSparkle }       from "./bokehSparkle.js";
 
 import { resetDust }                from "./dustParticles.js";
 import { resetHarmonicWaves }       from "./harmonicWaves.js";
@@ -36,6 +38,7 @@ import { resetAmbientSpectrum }     from "./ambientSpectrum.js";
 import { resetNakhwa }              from "./nakhwaFire.js";
 import { resetRingSpectrum }        from "./ringSpectrum.js";
 import { resetPrismaticCollision }  from "./prismaticCollision.js";
+import { resetBokehSparkle }        from "./bokehSparkle.js";
 
 export const RENDER_MAP = {
   ethereal_breath:       renderLuminousDrift,
@@ -49,6 +52,7 @@ export const RENDER_MAP = {
   nakhwa_fire:           renderNakhwaFire,
   ring_spectrum:         renderRingSpectrum,
   prismatic_collision:   renderPrismaticCollision,
+  bokeh_sparkle:         renderBokehSparkle,
 };
 
 export const TRAIL_MODES = new Set(["cosmic_flow"]);
@@ -64,4 +68,5 @@ export function resetState() {
   resetNakhwa();
   resetRingSpectrum();
   resetPrismaticCollision();
+  resetBokehSparkle();
 }

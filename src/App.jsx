@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { analyzeBands } from "./utils/audio.js";
 import { detectBPM, createMixer, currentTrack } from "./utils/mixer.js";
 import { renderSongTitle } from "./visualizers/songTitle.js";
+import { renderBokehSparkle, setBokehConfig } from "./visualizers/bokehSparkle.js";
 
 /* ═══════════════════════════════════════════════════════════
    DOWNLOAD HELPER
@@ -66,6 +67,12 @@ export default function App() {
   const [titleFontSize, setTitleFontSize] = useState(50);
   const [titleFontSize2, setTitleFontSize2] = useState(30);
   const [endLogo, setEndLogo] = useState(null);
+  const [bokehEnabled, setBokehEnabled] = useState(true);
+  const [bokehQuantity, setBokehQuantity] = useState(1.0);
+  const [bokehSizeRange, setBokehSizeRange] = useState(1.0);
+  const [bokehShape, setBokehShape] = useState("circle");
+  const [bokehOpacity, setBokehOpacity] = useState(1.0);
+  const [bokehDirection, setBokehDirection] = useState("down");
 
   const canvasRef = useRef(null);
   const animRef = useRef(null);
@@ -83,6 +90,10 @@ export default function App() {
   const RES = { "720p": [1280, 720], "1080p": [1920, 1080], "1440p": [2560, 1440] };
 
   useEffect(() => { tracksRef.current = tracks; }, [tracks]);
+
+  useEffect(() => {
+    setBokehConfig({ quantity: bokehQuantity, sizeRange: bokehSizeRange, shape: bokehShape, opacity: bokehOpacity, direction: bokehDirection });
+  }, [bokehQuantity, bokehSizeRange, bokehShape, bokehOpacity, bokehDirection]);
 
   const totalPlaylistDuration = useCallback(() => {
     if (!tracks.length) return 0;
@@ -158,6 +169,9 @@ export default function App() {
       const bgImg = getBgForPlayhead(mixer, playhead);
       drawBg(ctx, cw, ch, bgImg);
 
+      // Bokeh
+      if (bokehEnabled) renderBokehSparkle(ctx, cw, ch, elapsed, bands);
+
       // Title
       let line1 = songTitle || audioName;
       if (titleMode === "dynamic" && mixer) {
@@ -169,7 +183,7 @@ export default function App() {
       fc++; animRef.current = requestAnimationFrame(loop);
     };
     animRef.current = requestAnimationFrame(loop); setPlaying(true);
-  }, [resolution, tracks, crossfadeSec, titleMode, audioName, songTitle, songTitle2, showTitle, titlePos, titleFontSize, titleFontSize2, getBgForPlayhead, stopAll]);
+  }, [resolution, tracks, crossfadeSec, titleMode, audioName, songTitle, songTitle2, showTitle, titlePos, titleFontSize, titleFontSize2, bokehEnabled, getBgForPlayhead, stopAll]);
 
   const handleFiles = useCallback(async (fileList) => {
     const files = Array.from(fileList || []).filter(f =>
@@ -291,6 +305,8 @@ export default function App() {
           const bgImg = getBgForPlayhead(mixer, playhead);
           drawBg(octx, cw, ch, bgImg);
 
+          if (bokehEnabled) renderBokehSparkle(octx, cw, ch, elapsed, bands);
+
           let expLine1 = songTitle || audioName;
           if (titleMode === "dynamic" && mixer) {
             const cur = currentTrack(mixer.schedule, playhead);
@@ -341,7 +357,7 @@ export default function App() {
     } finally {
       setExporting(false); exportTimerRef.current = null;
     }
-  }, [loops, resolution, tracks, crossfadeSec, titleMode, audioName, songTitle, songTitle2, showTitle, titlePos, titleFontSize, titleFontSize2, endLogo, getBgForPlayhead, stopPreviewOnly]);
+  }, [loops, resolution, tracks, crossfadeSec, titleMode, audioName, songTitle, songTitle2, showTitle, titlePos, titleFontSize, titleFontSize2, bokehEnabled, endLogo, getBgForPlayhead, stopPreviewOnly]);
 
   useEffect(() => () => stopAll(), [stopAll]);
 
@@ -562,6 +578,84 @@ export default function App() {
                   </div>
                 )}
               </div>
+            </div>
+
+            {/* Bokeh Sparkle Settings */}
+            <div style={{ marginTop: 24, background: "rgba(8,6,4,0.6)", border: "1px solid #1A1814", borderRadius: 10, padding: "16px 18px" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div onClick={() => setBokehEnabled(!bokehEnabled)} style={{ width: 18, height: 18, borderRadius: 3, border: "1px solid " + (bokehEnabled ? gold(0.5) : "#1E1C18"), display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", background: bokehEnabled ? "rgba(212,175,55,0.1)" : "transparent", fontSize: 13, color: gold(0.7) }}>{bokehEnabled ? "✓" : ""}</div>
+                  <span style={{ fontSize: 15, color: gold(0.6), fontFamily: "'Sarabun'", fontWeight: 300, letterSpacing: 1 }}>Bokeh Sparkle</span>
+                </div>
+                <span style={{ fontSize: 12, color: "#5A5448", fontFamily: "'Sarabun'", fontWeight: 200 }}>ละอองโบเก้ระยิบระยับ</span>
+              </div>
+
+              {bokehEnabled && (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                  {/* Shape selector */}
+                  <div>
+                    <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 8 }}>รูปทรง (Shape)</label>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 4 }}>
+                      {[
+                        ["circle", "วงกลม", "●"],
+                        ["hexagon", "หกเหลี่ยม", "⬡"],
+                        ["snowflake", "เกล็ดหิมะ", "❄"],
+                        ["raindrop", "หยดฝน", "💧"],
+                      ].map(([val, label, icon]) => (
+                        <button key={val} onClick={() => setBokehShape(val)} style={{
+                          padding: "6px 8px", borderRadius: 6, fontSize: 12, fontFamily: "'Sarabun'", cursor: "pointer",
+                          border: bokehShape === val ? "1px solid " + gold(0.5) : "1px solid #1E1C18",
+                          background: bokehShape === val ? "rgba(212,175,55,0.08)" : "rgba(8,6,4,0.8)",
+                          color: bokehShape === val ? gold(0.8) : "#5A5448", transition: "all 0.2s",
+                          display: "flex", alignItems: "center", gap: 4, justifyContent: "center",
+                        }}>
+                          <span style={{ fontSize: 14 }}>{icon}</span> {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Quantity & Size sliders */}
+                  <div>
+                    <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6 }}>
+                      ปริมาณ ({Math.round(bokehQuantity * 100)}%)
+                    </label>
+                    <input type="range" min={10} max={300} value={Math.round(bokehQuantity * 100)}
+                      onChange={e => setBokehQuantity(Number(e.target.value) / 100)}
+                      style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
+
+                    <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>
+                      ขนาดสุ่ม ({Math.round(bokehSizeRange * 100)}%)
+                    </label>
+                    <input type="range" min={30} max={300} value={Math.round(bokehSizeRange * 100)}
+                      onChange={e => setBokehSizeRange(Number(e.target.value) / 100)}
+                      style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
+
+                    <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>
+                      ความเข้ม ({Math.round(bokehOpacity * 100)}%)
+                    </label>
+                    <input type="range" min={5} max={300} value={Math.round(bokehOpacity * 100)}
+                      onChange={e => setBokehOpacity(Number(e.target.value) / 100)}
+                      style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
+
+                    <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>ทิศทาง</label>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      {[
+                        ["down", "↓ ตก"],
+                        ["up", "↑ ลอย"],
+                        ["still", "• นิ่ง"],
+                      ].map(([val, label]) => (
+                        <button key={val} onClick={() => setBokehDirection(val)} style={{
+                          flex: 1, padding: "5px 6px", borderRadius: 6, fontSize: 12, fontFamily: "'Sarabun'", cursor: "pointer",
+                          border: bokehDirection === val ? "1px solid " + gold(0.5) : "1px solid #1E1C18",
+                          background: bokehDirection === val ? "rgba(212,175,55,0.08)" : "rgba(8,6,4,0.8)",
+                          color: bokehDirection === val ? gold(0.8) : "#5A5448", transition: "all 0.2s",
+                        }}>{label}</button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 36 }}>
