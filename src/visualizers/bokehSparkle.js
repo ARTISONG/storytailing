@@ -16,10 +16,10 @@ const SNOW_LAYERS = [
 
 /* ── Generic layers (circle / hexagon / raindrop) ────────────────────────── */
 const LAYER_DEFS = [
-  { freqKeys:["subBass","bass"],     depthMin:0.00, depthMax:0.25, sizeMin:0.012, sizeMax:0.030, countFrac:0.18, alphaBase:0.08, alphaFreq:0.14 },
-  { freqKeys:["lowMid","mid"],       depthMin:0.20, depthMax:0.50, sizeMin:0.006, sizeMax:0.018, countFrac:0.30, alphaBase:0.10, alphaFreq:0.18 },
-  { freqKeys:["highMid","presence"], depthMin:0.45, depthMax:0.75, sizeMin:0.002, sizeMax:0.010, countFrac:0.30, alphaBase:0.13, alphaFreq:0.22 },
-  { freqKeys:["brilliance"],         depthMin:0.70, depthMax:1.00, sizeMin:0.001, sizeMax:0.006, countFrac:0.22, alphaBase:0.16, alphaFreq:0.28 },
+  { freqKeys:["subBass","bass"],     depthMin:0.00, depthMax:0.25, sizeMin:0.016, sizeMax:0.038, countFrac:0.18, alphaBase:0.10, alphaFreq:0.16, rotSpeed:0.0004 },
+  { freqKeys:["lowMid","mid"],       depthMin:0.20, depthMax:0.50, sizeMin:0.008, sizeMax:0.022, countFrac:0.30, alphaBase:0.14, alphaFreq:0.20, rotSpeed:0.0008 },
+  { freqKeys:["highMid","presence"], depthMin:0.45, depthMax:0.75, sizeMin:0.004, sizeMax:0.013, countFrac:0.30, alphaBase:0.18, alphaFreq:0.24, rotSpeed:0.0012 },
+  { freqKeys:["brilliance"],         depthMin:0.70, depthMax:1.00, sizeMin:0.002, sizeMax:0.008, countFrac:0.22, alphaBase:0.22, alphaFreq:0.30, rotSpeed:0.0018 },
 ];
 
 /* ── Sprite cache — built once, reused every frame ───────────────────────── */
@@ -315,21 +315,58 @@ export function renderBokehSparkle(ctx, w, h, t, bands) {
       ctx.drawImage(sprite, -dim/2, -dim/2, dim, dim);
 
     } else {
-      // ── Generic filled shape ──────────────────────────────
       ctx.translate(p.x, p.y);
-      const shapeFn = SHAPE_FN[_config.shape]||drawCircle;
-      const blurFactor = (1-p.depth)*0.5+0.5;
-      const glowR = r*(1+blurFactor*0.8);
-      const wR=Math.round(228+p.depth*27), wG=Math.round(226+freq*6), wB=Math.round(220+p.depth*14);
-      const g = ctx.createRadialGradient(0,0,0,0,0,glowR);
-      g.addColorStop(0,   `rgba(${wR},${wG},${wB},${(alpha*0.85).toFixed(3)})`);
-      g.addColorStop(0.30,`rgba(${wR},${wG},${wB},${(alpha*0.50).toFixed(3)})`);
-      g.addColorStop(0.65,`rgba(${wR},${wG},${wB},${(alpha*0.15).toFixed(3)})`);
-      g.addColorStop(1,   `rgba(${wR},${wG},${wB},0)`);
-      ctx.fillStyle=g; shapeFn(ctx,glowR); ctx.fill();
-      if (p.depth>0.5 && r>minDim*0.002) {
-        ctx.fillStyle=`rgba(255,255,255,${(alpha*0.35).toFixed(3)})`;
-        ctx.beginPath(); ctx.arc(0,0,r*0.18,0,TAU); ctx.fill();
+      ctx.rotate(p.rotAngle);   // hexagon/raindrop tumble slowly
+
+      const shape = _config.shape;
+
+      if (shape === "hexagon" || shape === "raindrop") {
+        // ── Crisp outline — 2-pass stroke (glow + crisp) ─────
+        const shapeFn = SHAPE_FN[shape];
+        const sr  = r * (shape === "raindrop" ? 0.88 : 0.82);
+        const lw  = Math.max(0.6, r * 0.072);
+
+        // Soft inner fill (gives the "lit interior" feel)
+        ctx.globalAlpha = alpha * 0.14;
+        ctx.fillStyle   = "white";
+        shapeFn(ctx, sr); ctx.fill();
+
+        ctx.lineCap  = "round";
+        ctx.lineJoin = "round";
+
+        // Glow pass — fat & faint
+        ctx.globalAlpha  = alpha * 0.22;
+        ctx.strokeStyle  = "white";
+        ctx.lineWidth    = lw * 4.0;
+        shapeFn(ctx, sr); ctx.stroke();
+
+        // Crisp pass — thin & bright
+        ctx.globalAlpha = alpha * 0.92;
+        ctx.lineWidth   = lw * 0.85;
+        shapeFn(ctx, sr); ctx.stroke();
+
+        // Tiny center dot for near-layer particles
+        if (p.depth > 0.45 && r > minDim * 0.003) {
+          ctx.globalAlpha = alpha * 0.70;
+          ctx.fillStyle   = "white";
+          ctx.beginPath(); ctx.arc(0, 0, lw * 1.2, 0, TAU); ctx.fill();
+        }
+
+      } else {
+        // ── Circle: bokeh soft disc (depth-of-field look) ─────
+        const blurFactor = (1-p.depth)*0.5+0.5;
+        const glowR = r*(1+blurFactor*0.8);
+        const wR=Math.round(228+p.depth*27), wG=Math.round(226+freq*6), wB=Math.round(220+p.depth*14);
+        const g = ctx.createRadialGradient(0,0,0,0,0,glowR);
+        g.addColorStop(0,   `rgba(${wR},${wG},${wB},${(alpha*0.85).toFixed(3)})`);
+        g.addColorStop(0.30,`rgba(${wR},${wG},${wB},${(alpha*0.50).toFixed(3)})`);
+        g.addColorStop(0.65,`rgba(${wR},${wG},${wB},${(alpha*0.15).toFixed(3)})`);
+        g.addColorStop(1,   `rgba(${wR},${wG},${wB},0)`);
+        ctx.fillStyle=g; ctx.beginPath(); ctx.arc(0,0,glowR,0,TAU); ctx.fill();
+        if (p.depth>0.5 && r>minDim*0.002) {
+          ctx.fillStyle=`rgba(255,255,255,${(alpha*0.35).toFixed(3)})`;
+          ctx.beginPath(); ctx.arc(0,0,r*0.18,0,TAU); ctx.fill();
+        }
       }
     }
 
