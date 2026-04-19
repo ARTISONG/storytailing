@@ -119,10 +119,15 @@ export function renderSongTitle(ctx, w, h, title, title2, bands, t, pos, fontSiz
         return [d[0], d[1], d[2]];
       } catch { return [180, 180, 180]; }
     };
+    // glassy rim: boost saturation, keep hue close to actual bg scene color
     const rim = ([r, g, b], a) => {
-      const mx = Math.max(r, g, b);
-      const s  = mx > 10 ? Math.min(2.6, 210 / mx) : 1;
-      return `rgba(${Math.min(255,(r*s+70))|0},${Math.min(255,(g*s+70))|0},${Math.min(255,(b*s+70))|0},${a})`;
+      const avg = (r + g + b) / 3;
+      const sat = 1.8;          // saturate toward scene hue
+      const lift = 28;           // small brightness lift only
+      const nr = Math.min(255, avg + (r - avg) * sat + lift) | 0;
+      const ng = Math.min(255, avg + (g - avg) * sat + lift) | 0;
+      const nb = Math.min(255, avg + (b - avg) * sat + lift) | 0;
+      return `rgba(${nr},${ng},${nb},${a})`;
     };
     const cT = sc(cx,               ty - fs * 0.55);
     const cB = sc(cx,               ty + fs * 0.55);
@@ -150,25 +155,37 @@ export function renderSongTitle(ctx, w, h, title, title2, bands, t, pos, fontSiz
     ctx.fillText(text, cx, ty);
     ctx.shadowBlur = 0; ctx.shadowColor = "rgba(0,0,0,0)";
 
-    /* ── step F: bg-sampled gradient rim stroke (bright, for definition) ── */
+    /* ── step F: bg-sampled gradient rim — thin, crisp, glassy ── */
+    // sample 4 more midpoints for smoother gradient around letters
+    const cTL = sc(cx - measured * 0.35, ty - fs * 0.45);
+    const cTR = sc(cx + measured * 0.35, ty - fs * 0.45);
+    const cBL = sc(cx - measured * 0.35, ty + fs * 0.45);
+    const cBR = sc(cx + measured * 0.35, ty + fs * 0.45);
+
     const strokeG = ctx.createLinearGradient(
       cx - measured / 2, ty - fs * 0.5,
       cx + measured / 2, ty + fs * 0.5
     );
-    const sa = 0.75 + brill * 0.2 + bass * 0.1;
-    strokeG.addColorStop(0,    rim(cL, sa * 0.8));
-    strokeG.addColorStop(0.25, rim(cT, sa));
-    strokeG.addColorStop(0.5,  rim(cR, sa * 0.9));
-    strokeG.addColorStop(0.75, rim(cB, sa * 0.7));
-    strokeG.addColorStop(1,    rim(cL, sa * 0.6));
-    ctx.lineWidth   = Math.max(1.2, fs * 0.028);
-    ctx.lineJoin    = "round";
+    const sa = 0.72 + brill * 0.18 + bass * 0.08;
+    strokeG.addColorStop(0,    rim(cL,  sa * 0.75));
+    strokeG.addColorStop(0.15, rim(cTL, sa * 0.9));
+    strokeG.addColorStop(0.3,  rim(cT,  sa));
+    strokeG.addColorStop(0.5,  rim(cTR, sa * 0.95));
+    strokeG.addColorStop(0.65, rim(cR,  sa * 0.85));
+    strokeG.addColorStop(0.8,  rim(cBR, sa * 0.7));
+    strokeG.addColorStop(0.9,  rim(cB,  sa * 0.6));
+    strokeG.addColorStop(1,    rim(cBL, sa * 0.5));
+
+    ctx.lineWidth   = Math.max(0.5, fs * 0.012); // thin — ~1.2px at 100px font
+    ctx.lineJoin    = "miter";
+    ctx.miterLimit  = 6;
     ctx.strokeStyle = strokeG;
     ctx.strokeText(text, cx, ty);
 
-    /* ── step G: white inner stroke hairline (crisp edge) ── */
-    ctx.lineWidth   = Math.max(0.5, fs * 0.01);
-    ctx.strokeStyle = `rgba(255,255,255,${isSecond ? 0.45 : 0.65})`;
+    /* ── step G: hairline white — razor-sharp inner edge ── */
+    ctx.lineWidth   = Math.max(0.25, fs * 0.005);
+    ctx.lineJoin    = "miter";
+    ctx.strokeStyle = `rgba(255,255,255,${isSecond ? 0.38 : 0.55})`;
     ctx.strokeText(text, cx, ty);
 
     /* ── step H: top-lit specular — subtle, on top of glass ── */
