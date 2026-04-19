@@ -87,7 +87,8 @@ export default function App() {
   const exportTimerRef = useRef(null);
   const downloadBlobRef = useRef(null);
 
-  const RES = { "720p": [1280, 720], "1080p": [1920, 1080], "1440p": [2560, 1440] };
+  const RES = { "720p": [1280, 720], "1080p": [1920, 1080], "1440p": [2560, 1440], "4K": [3840, 2160] };
+  const BITRATE = { "720p": 8_000_000, "1080p": 20_000_000, "1440p": 40_000_000, "4K": 80_000_000 };
 
   useEffect(() => { tracksRef.current = tracks; }, [tracks]);
 
@@ -280,7 +281,7 @@ export default function App() {
 
       const effectiveTotal = mixer ? mixer.totalDuration : totalDur;
       const mimeType = hasAudio ? "video/webm;codecs=vp9,opus" : "video/webm;codecs=vp9";
-      rec = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 30000000 });
+      rec = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: BITRATE[resolution] ?? 30_000_000 });
       const chunks = []; rec.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data) };
       const done = new Promise(r => { rec.onstop = r }); rec.start(100);
 
@@ -556,7 +557,7 @@ export default function App() {
               <div>
                 <label style={{ fontSize: 17, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6 }}>Resolution</label>
                 <div style={{ display: "flex", gap: 6 }}>
-                  {["720p", "1080p", "1440p"].map(r => (
+                  {["720p", "1080p", "1440p", "4K"].map(r => (
                     <button key={r} onClick={() => setResolution(r)} style={{ padding: "7px 14px", borderRadius: 6, fontSize: 16, fontFamily: "'Sarabun'", cursor: "pointer", border: resolution === r ? "1px solid " + gold(0.4) : "1px solid #1E1C18", background: resolution === r ? "rgba(212,175,55,0.06)" : "rgba(8,6,4,0.8)", color: resolution === r ? gold(0.7) : "#4A4030", transition: "all 0.3s" }}>{r}</button>
                   ))}
                 </div>
