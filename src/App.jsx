@@ -348,6 +348,7 @@ export default function App() {
       const blob = new Blob(chunks, { type: "video/webm" });
       const fname = `${(songTitle || "storybook").replace(/\s+/g, "-")}.webm`;
       downloadBlobRef.current = { blob, name: fname };
+      triggerDownload(blob, fname);
       const url = URL.createObjectURL(blob);
       setDownloadUrl(url); setDownloadName(fname);
     } catch (err) {
