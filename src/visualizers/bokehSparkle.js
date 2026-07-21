@@ -145,6 +145,68 @@ function buildSprites() {
   }
 }
 
+/* ── Bubble sprite — soap-bubble / water-droplet look ────────────────────────
+   Built with a dark outer edge + bright rim + iridescent arcs + specular
+   highlights so it stays readable on bright, colorful backgrounds
+   (rendered with source-over, not screen).                                  */
+function buildBubbleSprite() {
+  if (_sprites.bubble) return;
+  const S  = SPRITE_SIZE;
+  const cx = S/2, cy = S/2;
+  const R  = S*0.42;               // bubble radius (margin for glow)
+  const oc = new OffscreenCanvas(S, S);
+  const c  = oc.getContext("2d");
+  c.translate(cx, cy);
+
+  // 1. Faint interior — edge slightly denser than center (thin-film shell)
+  {
+    const g = c.createRadialGradient(0,0,R*0.55, 0,0,R);
+    g.addColorStop(0,    "rgba(255,255,255,0.00)");
+    g.addColorStop(0.75, "rgba(255,255,255,0.05)");
+    g.addColorStop(1,    "rgba(255,255,255,0.16)");
+    c.fillStyle = g;
+    c.beginPath(); c.arc(0,0,R,0,TAU); c.fill();
+  }
+
+  // 2. Dark occlusion ring just outside the rim — the trick that keeps the
+  //    bubble visible on white / bright backgrounds
+  c.lineCap = "round";
+  c.strokeStyle = "rgba(8,22,42,0.55)";
+  c.lineWidth   = S*0.030;
+  c.beginPath(); c.arc(0,0,R*1.02,0,TAU); c.stroke();
+
+  // 3. Bright rim — full circle
+  c.strokeStyle = "rgba(255,255,255,0.95)";
+  c.lineWidth   = S*0.020;
+  c.beginPath(); c.arc(0,0,R*0.965,0,TAU); c.stroke();
+
+  // 4. Iridescent arcs hugging the rim (thin-film interference colours)
+  const arcs = [
+    { from: 0.15*TAU, to: 0.45*TAU, color: "rgba(90,205,255,0.85)"  },  // cyan lower-left
+    { from: 0.52*TAU, to: 0.74*TAU, color: "rgba(255,140,200,0.80)" },  // pink upper-right
+    { from: 0.78*TAU, to: 0.95*TAU, color: "rgba(255,210,110,0.75)" },  // gold upper
+  ];
+  for (const a of arcs) {
+    c.strokeStyle = a.color;
+    c.lineWidth   = S*0.045;
+    c.beginPath(); c.arc(0,0,R*0.91, a.from, a.to); c.stroke();
+  }
+
+  // 5. Specular highlights — main (upper-left) + tiny counter (lower-right)
+  {
+    const hx=-R*0.42, hy=-R*0.46;
+    const g = c.createRadialGradient(hx,hy,0, hx,hy,R*0.30);
+    g.addColorStop(0,   "rgba(255,255,255,0.95)");
+    g.addColorStop(0.4, "rgba(255,255,255,0.45)");
+    g.addColorStop(1,   "rgba(255,255,255,0)");
+    c.fillStyle=g; c.beginPath(); c.ellipse(hx,hy,R*0.26,R*0.16,-Math.PI/4,0,TAU); c.fill();
+    // counter-highlight
+    c.fillStyle="rgba(255,255,255,0.35)";
+    c.beginPath(); c.ellipse(R*0.38,R*0.44,R*0.09,R*0.05,-Math.PI/4,0,TAU); c.fill();
+  }
+  _sprites.bubble = oc;
+}
+
 /* ── Generic shape functions (non-snow) ──────────────────────────────────── */
 function drawCircle(ctx,r){ctx.beginPath();ctx.arc(0,0,r,0,TAU);}
 function drawHexagon(ctx,r){ctx.beginPath();for(let i=0;i<6;i++){const a=(i/6)*TAU-Math.PI/6;i===0?ctx.moveTo(Math.cos(a)*r,Math.sin(a)*r):ctx.lineTo(Math.cos(a)*r,Math.sin(a)*r);}ctx.closePath();}
@@ -197,6 +259,7 @@ function initParticles(w, h) {
         vy0 = dir==="up" ? -spd : dir==="still" ? 0 : spd;
         if (_config.shape==="raindrop") vy0 *= (dir==="still"?1:3.5+depth*2);
         if (_config.shape==="hexagon")  vy0 *= 0.4;
+        if (_config.shape==="bubble")   vy0 *= 0.55;   // bubbles drift lazily
       }
 
       pts.push({
@@ -224,8 +287,10 @@ export function renderBokehSparkle(ctx, w, h, t, bands) {
     _particles = initParticles(w,h); _prevW=w; _prevH=h;
   }
 
-  const isSnow = _config.shape==="snowflake";
-  if (isSnow) buildSprites();   // no-op after first call
+  const isSnow   = _config.shape==="snowflake";
+  const isBubble = _config.shape==="bubble";
+  if (isSnow)   buildSprites();        // no-op after first call
+  if (isBubble) buildBubbleSprite();
 
   const time   = t*0.001;
   const bass   = bands.bass||0;
@@ -266,6 +331,12 @@ export function renderBokehSparkle(ctx, w, h, t, bands) {
         dx += simplex.noise2D(p.noiseOff+400, time*1.5)*_beatImpulse*p.depth*minDim*0.0003;
       if (dir==="still")
         dy = simplex.noise2D(p.noiseOff+300, time*0.03)*minDim*0.00030;
+    } else if (isBubble) {
+      // gentle wobble as bubbles drift — stronger sway than dust
+      dx += Math.sin(time*(0.5+p.swayFreq) + p.swayPhase) * minDim*0.00030*(0.4+p.depth)
+          + simplex.noise2D(p.noiseOff, time*0.05)*minDim*0.00020;
+      const ny=simplex.noise2D(p.noiseOff+200, time*0.05)*minDim*0.00020;
+      dy = dir==="still" ? ny : dy*0.75+ny;
     } else if (_config.shape==="raindrop") {
       dx += simplex.noise2D(p.noiseOff, time*0.02)*minDim*0.00012;
     } else if (_config.shape==="hexagon") {
@@ -320,7 +391,20 @@ export function renderBokehSparkle(ctx, w, h, t, bands) {
 
       const shape = _config.shape;
 
-      if (shape === "hexagon" || shape === "raindrop") {
+      if (shape === "bubble") {
+        // ── Bubble sprite — source-over so the dark rim reads on bright bg ─
+        const sprite = _sprites.bubble;
+        if (!sprite) { ctx.restore(); continue; }
+        ctx.globalCompositeOperation = "source-over";
+        ctx.rotate(-p.rotAngle);   // keep the specular highlight upper-left
+        // subtle squash & stretch wobble like a real drifting bubble
+        const wob = Math.sin(time*2.2 + p.phase)*0.05;
+        ctx.scale(1+wob, 1-wob);
+        const dim = r * 2.4;
+        ctx.globalAlpha = Math.min(1, alpha*1.5);
+        ctx.drawImage(sprite, -dim/2, -dim/2, dim, dim);
+
+      } else if (shape === "hexagon" || shape === "raindrop") {
         // ── Crisp outline — 2-pass stroke (glow + crisp) ─────
         const shapeFn = SHAPE_FN[shape];
         const sr  = r * (shape === "raindrop" ? 0.88 : 0.82);
@@ -353,19 +437,42 @@ export function renderBokehSparkle(ctx, w, h, t, bands) {
         }
 
       } else {
-        // ── Circle: bokeh soft disc (depth-of-field look) ─────
+        // ── Circle: sunset dust motes — warm golden discs with a faint
+        //    chromatic (orange→rose) edge, like lens bokeh at golden hour ──
         const blurFactor = (1-p.depth)*0.5+0.5;
         const glowR = r*(1+blurFactor*0.8);
-        const wR=Math.round(228+p.depth*27), wG=Math.round(226+freq*6), wB=Math.round(220+p.depth*14);
+
+        // faint dark contact ring (source-over) so motes read on bright bg
+        if (p.depth > 0.35) {
+          ctx.globalCompositeOperation = "source-over";
+          ctx.strokeStyle = `rgba(60,30,10,${(alpha*0.16).toFixed(3)})`;
+          ctx.lineWidth = Math.max(0.6, r*0.10);
+          ctx.beginPath(); ctx.arc(0,0,glowR*0.78,0,TAU); ctx.stroke();
+          ctx.globalCompositeOperation = "screen";
+        }
+
+        // warm core → gold mid → rose edge (each mote drifts in hue a little)
+        const hueShift = Math.sin(p.phase)*14;                      // per-particle variety
+        const cR=255, cG=Math.round(238+hueShift*0.3), cB=Math.round(205+hueShift);
+        const mG=Math.round(198+freq*22), mB=Math.round(120+hueShift*1.6);
         const g = ctx.createRadialGradient(0,0,0,0,0,glowR);
-        g.addColorStop(0,   `rgba(${wR},${wG},${wB},${(alpha*0.85).toFixed(3)})`);
-        g.addColorStop(0.30,`rgba(${wR},${wG},${wB},${(alpha*0.50).toFixed(3)})`);
-        g.addColorStop(0.65,`rgba(${wR},${wG},${wB},${(alpha*0.15).toFixed(3)})`);
-        g.addColorStop(1,   `rgba(${wR},${wG},${wB},0)`);
+        g.addColorStop(0,   `rgba(${cR},${cG},${cB},${(alpha*0.90).toFixed(3)})`);   // warm white core
+        g.addColorStop(0.35,`rgba(255,${mG},${mB},${(alpha*0.55).toFixed(3)})`);     // golden body
+        g.addColorStop(0.72,`rgba(255,166,120,${(alpha*0.20).toFixed(3)})`);         // peach falloff
+        g.addColorStop(1,   `rgba(255,140,150,0)`);                                  // rose fade-out
         ctx.fillStyle=g; ctx.beginPath(); ctx.arc(0,0,glowR,0,TAU); ctx.fill();
+
+        // bright bokeh rim on near, larger motes (classic "donut" disc)
+        if (p.depth > 0.55 && r > minDim*0.004) {
+          ctx.strokeStyle = `rgba(255,236,200,${(alpha*0.45).toFixed(3)})`;
+          ctx.lineWidth = Math.max(0.5, r*0.09);
+          ctx.beginPath(); ctx.arc(0,0,glowR*0.68,0,TAU); ctx.stroke();
+        }
+
+        // tiny sparkle core
         if (p.depth>0.5 && r>minDim*0.002) {
-          ctx.fillStyle=`rgba(255,255,255,${(alpha*0.35).toFixed(3)})`;
-          ctx.beginPath(); ctx.arc(0,0,r*0.18,0,TAU); ctx.fill();
+          ctx.fillStyle=`rgba(255,252,240,${(alpha*0.50).toFixed(3)})`;
+          ctx.beginPath(); ctx.arc(0,0,r*0.16,0,TAU); ctx.fill();
         }
       }
     }
@@ -381,5 +488,5 @@ export function resetBokehSparkle() {
   _smoothBands={subBass:0,bass:0,lowMid:0,mid:0,highMid:0,presence:0,brilliance:0,overall:0};
   _beatImpulse=0; _smoothBass=0; _prevW=0; _prevH=0;
   // clear sprite cache so they rebuild on next use
-  delete _sprites.dot; delete _sprites.simple; delete _sprites.crystal; delete _sprites.flake;
+  delete _sprites.dot; delete _sprites.simple; delete _sprites.crystal; delete _sprites.flake; delete _sprites.bubble;
 }
