@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { analyzeBands } from "./utils/audio.js";
 import { detectBPM, createMixer, currentTrack } from "./utils/mixer.js";
 import { renderSongTitle } from "./visualizers/songTitle.js";
@@ -32,13 +32,58 @@ const Btn = ({ children, primary, disabled, onClick, sx }) => (
 /* ═══════════════════════════════════════════════════════════
    DRAW BACKGROUND IMAGE (cover-fit)
    ═══════════════════════════════════════════════════════════ */
+function drawCover(ctx, cw, ch, img, { zoom = 1, dx = 0, alpha = 1 } = {}) {
+  if (!img || alpha <= 0) return;
+  const scale = Math.max(cw / img.width, ch / img.height) * zoom;
+  const sw = img.width * scale, sh = img.height * scale;
+  ctx.globalAlpha = alpha;
+  ctx.drawImage(img, (cw - sw) / 2 + dx, (ch - sh) / 2, sw, sh);
+  ctx.globalAlpha = 1;
+}
+
 function drawBg(ctx, cw, ch, img) {
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, cw, ch);
-  if (!img) return;
-  const scale = Math.max(cw / img.width, ch / img.height);
-  const sw = img.width * scale, sh = img.height * scale;
-  ctx.drawImage(img, (cw - sw) / 2, (ch - sh) / 2, sw, sh);
+  drawCover(ctx, cw, ch, img);
+}
+
+const ease = p => p * p * (3 - 2 * p);   // smoothstep
+
+/* Draw the background with a transition between prev → next image.
+   prog: 0..1 through the transition window. */
+export function drawBgTransition(ctx, cw, ch, prevImg, img, prog, style) {
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, cw, ch);
+  const p = ease(Math.min(1, Math.max(0, prog)));
+
+  switch (style) {
+    case "cut":
+      drawCover(ctx, cw, ch, img);
+      break;
+    case "fadeblack": {
+      // first half: prev fades to black, second half: next fades in
+      if (p < 0.5) drawCover(ctx, cw, ch, prevImg, { alpha: 1 - p * 2 });
+      else         drawCover(ctx, cw, ch, img,     { alpha: (p - 0.5) * 2 });
+      break;
+    }
+    case "zoom": {
+      // prev zooms in as it fades out; next settles from a slight zoom
+      drawCover(ctx, cw, ch, prevImg, { zoom: 1 + p * 0.12, alpha: 1 - p });
+      drawCover(ctx, cw, ch, img,     { zoom: 1.12 - p * 0.12, alpha: p });
+      break;
+    }
+    case "slide": {
+      // push: prev slides out left while next slides in from the right — no gaps
+      drawCover(ctx, cw, ch, prevImg, { dx: -cw * p });
+      drawCover(ctx, cw, ch, img,     { dx:  cw * (1 - p) });
+      break;
+    }
+    case "fade":
+    default:
+      drawCover(ctx, cw, ch, prevImg, { alpha: 1 - p });
+      drawCover(ctx, cw, ch, img,     { alpha: p });
+      break;
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -47,6 +92,7 @@ function drawBg(ctx, cw, ch, img) {
 export default function App() {
   const [tracks, setTracks] = useState([]); // [{name, buffer, bpm, fileName, bgImage}]
   const [crossfadeSec, setCrossfadeSec] = useState(10);
+  const [bgTransition, setBgTransition] = useState("fade");
   const [decoding, setDecoding] = useState(false);
   const [titleMode, setTitleMode] = useState("dynamic");
   const [audioName, setAudioName] = useState("");
@@ -96,6 +142,29 @@ export default function App() {
     setBokehConfig({ quantity: bokehQuantity, sizeRange: bokehSizeRange, shape: bokehShape, opacity: bokehOpacity, direction: bokehDirection });
   }, [bokehQuantity, bokehSizeRange, bokehShape, bokehOpacity, bokehDirection]);
 
+  // YouTube chapter list — track start times across all loops
+  const youtubeChapters = useMemo(() => {
+    const ready = tracks.filter(t => t.buffer);
+    if (!ready.length) return "";
+    const total = (ready.reduce((s, t) => s + t.buffer.duration, 0) - crossfadeSec * (ready.length - 1)) * loops;
+    const fmt = (sec) => {
+      const s = Math.max(0, Math.round(sec));
+      const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+      const mm = String(m).padStart(2, "0"), sss = String(ss).padStart(2, "0");
+      return total >= 3600 ? `${h}:${mm}:${sss}` : `${mm}:${sss}`;
+    };
+    const lines = [];
+    let t = 0;
+    for (let l = 0; l < loops; l++) {
+      for (let i = 0; i < ready.length; i++) {
+        lines.push(`${fmt(t)} ${ready[i].name || `Track ${i + 1}`}`);
+        t += ready[i].buffer.duration - crossfadeSec;
+      }
+    }
+    return lines.join("\n");
+  }, [tracks, loops, crossfadeSec]);
+  const [chaptersCopied, setChaptersCopied] = useState(false);
+
   const totalPlaylistDuration = useCallback(() => {
     if (!tracks.length) return 0;
     const sum = tracks.reduce((s, t) => s + (t.buffer ? t.buffer.duration : 0), 0);
@@ -117,16 +186,29 @@ export default function App() {
     setExporting(false);
   }, [stopPreviewOnly]);
 
-  // Get background image for given playhead position
+  // Get background image (+ transition state) for given playhead position.
+  // Returns { img, prevImg, prog } — prog in [0,1) while transitioning.
   const getBgForPlayhead = useCallback((mixer, playhead) => {
     const t = tracksRef.current;
-    if (!t.length) return null;
-    if (!mixer) return t[0]?.bgImage || null;
-    const cur = currentTrack(mixer.schedule, playhead);
-    if (!cur) return t[0]?.bgImage || null;
-    const idx = t.findIndex(tk => tk.name === cur.name);
-    return (idx >= 0 ? t[idx]?.bgImage : null) || null;
-  }, []);
+    const none = { img: t[0]?.bgImage || null, prevImg: null, prog: 1 };
+    if (!t.length) return { img: null, prevImg: null, prog: 1 };
+    if (!mixer) return none;
+    const sched = mixer.schedule;
+    const cur = currentTrack(sched, playhead);
+    if (!cur) return none;
+    const imgFor = (entry) => {
+      if (!entry) return null;
+      const idx = t.findIndex(tk => tk.name === entry.name);
+      return (idx >= 0 ? t[idx]?.bgImage : null) || null;
+    };
+    const img = imgFor(cur);
+    // transition window = first crossfadeSec seconds of the current entry
+    const into = playhead - cur.startOffset;
+    if (cur.index > 0 && into < crossfadeSec) {
+      return { img, prevImg: imgFor(sched[cur.index - 1]), prog: into / crossfadeSec };
+    }
+    return { img, prevImg: null, prog: 1 };
+  }, [crossfadeSec]);
 
   const startPreview = useCallback(() => {
     stopAll();
@@ -167,8 +249,9 @@ export default function App() {
       const mixer = mixerRef.current;
       let playhead = 0;
       if (mixer && audioCtxRef.current) playhead = audioCtxRef.current.currentTime - mixer.mixStart;
-      const bgImg = getBgForPlayhead(mixer, playhead);
-      drawBg(ctx, cw, ch, bgImg);
+      const bg = getBgForPlayhead(mixer, playhead);
+      if (bg.prog < 1) drawBgTransition(ctx, cw, ch, bg.prevImg, bg.img, bg.prog, bgTransition);
+      else drawBg(ctx, cw, ch, bg.img);
 
       // Bokeh
       if (bokehEnabled) renderBokehSparkle(ctx, cw, ch, elapsed, bands);
@@ -184,7 +267,7 @@ export default function App() {
       fc++; animRef.current = requestAnimationFrame(loop);
     };
     animRef.current = requestAnimationFrame(loop); setPlaying(true);
-  }, [resolution, tracks, crossfadeSec, titleMode, audioName, songTitle, songTitle2, showTitle, titlePos, titleFontSize, titleFontSize2, bokehEnabled, getBgForPlayhead, stopAll]);
+  }, [resolution, tracks, crossfadeSec, titleMode, audioName, songTitle, songTitle2, showTitle, titlePos, titleFontSize, titleFontSize2, bokehEnabled, bgTransition, getBgForPlayhead, stopAll]);
 
   const handleFiles = useCallback(async (fileList) => {
     const files = Array.from(fileList || []).filter(f =>
@@ -303,8 +386,9 @@ export default function App() {
           const bands = analyzeBands(analyser, sampleRate);
           let playhead = 0;
           if (mixer && audioCtxRef.current) playhead = audioCtxRef.current.currentTime - mixer.mixStart;
-          const bgImg = getBgForPlayhead(mixer, playhead);
-          drawBg(octx, cw, ch, bgImg);
+          const bg = getBgForPlayhead(mixer, playhead);
+          if (bg.prog < 1) drawBgTransition(octx, cw, ch, bg.prevImg, bg.img, bg.prog, bgTransition);
+          else drawBg(octx, cw, ch, bg.img);
 
           if (bokehEnabled) renderBokehSparkle(octx, cw, ch, elapsed, bands);
 
@@ -359,7 +443,7 @@ export default function App() {
     } finally {
       setExporting(false); exportTimerRef.current = null;
     }
-  }, [loops, resolution, tracks, crossfadeSec, titleMode, audioName, songTitle, songTitle2, showTitle, titlePos, titleFontSize, titleFontSize2, bokehEnabled, endLogo, getBgForPlayhead, stopPreviewOnly]);
+  }, [loops, resolution, tracks, crossfadeSec, titleMode, audioName, songTitle, songTitle2, showTitle, titlePos, titleFontSize, titleFontSize2, bokehEnabled, bgTransition, endLogo, getBgForPlayhead, stopPreviewOnly]);
 
   useEffect(() => () => stopAll(), [stopAll]);
 
@@ -480,6 +564,30 @@ export default function App() {
                       Crossfade ({crossfadeSec}s) · beat-match + EQ sweep
                     </label>
                     <input type="range" min={2} max={20} step={1} value={crossfadeSec} onChange={e => setCrossfadeSec(Number(e.target.value))} style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
+
+                    {/* Background transition style */}
+                    <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", margin: "14px 0 6px" }}>
+                      การเปลี่ยนภาพพื้นหลัง (Transition)
+                    </label>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 4 }}>
+                      {[
+                        ["fade", "เฟด", "◐"],
+                        ["fadeblack", "เฟดดำ", "◑"],
+                        ["zoom", "ซูม", "⊕"],
+                        ["slide", "เลื่อน", "⇄"],
+                        ["cut", "ตัด", "▮"],
+                      ].map(([val, label, icon]) => (
+                        <button key={val} onClick={() => setBgTransition(val)} style={{
+                          padding: "6px 4px", borderRadius: 6, fontSize: 12, fontFamily: "'Sarabun'", cursor: "pointer",
+                          border: bgTransition === val ? "1px solid " + gold(0.5) : "1px solid #1E1C18",
+                          background: bgTransition === val ? "rgba(212,175,55,0.08)" : "rgba(8,6,4,0.8)",
+                          color: bgTransition === val ? gold(0.8) : "#5A5448", transition: "all 0.2s",
+                          display: "flex", alignItems: "center", gap: 4, justifyContent: "center",
+                        }}>
+                          <span style={{ fontSize: 13 }}>{icon}</span> {label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
@@ -719,6 +827,36 @@ export default function App() {
                 </div>
                 <div style={{ textAlign: "center", fontSize: 16, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, marginTop: 6 }}>
                   Export แบบ real-time · ≈ {Math.ceil(totalPlaylistDuration() * loops / 60)} นาที
+                </div>
+              </div>
+            )}
+
+            {/* YouTube chapters */}
+            {youtubeChapters && (
+              <div style={{ maxWidth: 520, margin: "28px auto 0", background: "rgba(8,6,4,0.8)", border: "1px solid #1E1C18", borderRadius: 8, padding: 16 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                  <span style={{ fontSize: 14, color: gold(0.7), fontFamily: "'Sarabun'", letterSpacing: 0.5 }}>📑 YouTube Chapters</span>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(youtubeChapters).then(() => {
+                        setChaptersCopied(true);
+                        setTimeout(() => setChaptersCopied(false), 2000);
+                      });
+                    }}
+                    style={{
+                      padding: "4px 14px", borderRadius: 6, fontSize: 12, fontFamily: "'Sarabun'", cursor: "pointer",
+                      border: "1px solid " + gold(chaptersCopied ? 0.6 : 0.3),
+                      background: chaptersCopied ? "rgba(212,175,55,0.15)" : "transparent",
+                      color: gold(0.8), transition: "all 0.2s",
+                    }}>
+                    {chaptersCopied ? "✓ คัดลอกแล้ว" : "⧉ คัดลอก"}
+                  </button>
+                </div>
+                <pre style={{ margin: 0, fontSize: 13, lineHeight: 1.7, color: "#C8C4BE", fontFamily: "'Sarabun',monospace", whiteSpace: "pre-wrap", userSelect: "all" }}>
+                  {youtubeChapters}
+                </pre>
+                <div style={{ fontSize: 11, color: "#5A5448", fontFamily: "'Sarabun'", marginTop: 8 }}>
+                  วางใน description ของ YouTube เพื่อสร้าง chapter อัตโนมัติ
                 </div>
               </div>
             )}
