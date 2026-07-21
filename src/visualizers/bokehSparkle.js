@@ -145,6 +145,52 @@ function buildSprites() {
   }
 }
 
+/* ── Sunset dust sprites — warm golden motes, pre-baked hue variants ────────
+   Gradients are expensive per-frame; baking them into sprites keeps the
+   dust mode as cheap as the snowflake sprite system.                        */
+const DUST_VARIANTS = 5;
+function buildDustSprites() {
+  if (_sprites.dust) return;
+  const S = 160, cx = S/2, R = S*0.48;
+  const sprites = [];
+  for (let v = 0; v < DUST_VARIANTS; v++) {
+    const hue = (v/(DUST_VARIANTS-1) - 0.5) * 28;      // -14 … +14 hue drift
+    const oc = new OffscreenCanvas(S, S);
+    const c  = oc.getContext("2d");
+    const cG = Math.round(238 + hue*0.3), cB = Math.round(205 + hue);
+    const mB = Math.round(120 + hue*1.6);
+    const g  = c.createRadialGradient(cx,cx,0, cx,cx,R);
+    g.addColorStop(0,   `rgba(255,${cG},${cB},0.92)`);   // warm white core
+    g.addColorStop(0.35,`rgba(255,205,${mB},0.55)`);     // golden body
+    g.addColorStop(0.72,`rgba(255,166,120,0.20)`);       // peach falloff
+    g.addColorStop(1,   `rgba(255,140,150,0)`);          // rose fade-out
+    c.fillStyle = g;
+    c.beginPath(); c.arc(cx,cx,R,0,TAU); c.fill();
+    sprites.push(oc);
+  }
+  _sprites.dust = sprites;
+
+  // 4-point star glint for the sparkly "✦" flash on bright near motes
+  {
+    const oc = new OffscreenCanvas(S, S);
+    const c  = oc.getContext("2d");
+    c.translate(cx, cx);
+    const arm = S*0.46;
+    c.lineCap = "round";
+    for (const pass of [[S*0.030, 0.35], [S*0.012, 0.95]]) {
+      c.strokeStyle = `rgba(255,248,225,${pass[1]})`;
+      c.lineWidth   = pass[0];
+      c.beginPath();
+      for (let i=0;i<4;i++){ const a=i*Math.PI/2; c.moveTo(0,0); c.lineTo(Math.cos(a)*arm, Math.sin(a)*arm); }
+      c.stroke();
+    }
+    const g = c.createRadialGradient(0,0,0, 0,0,S*0.14);
+    g.addColorStop(0,"rgba(255,255,245,0.95)"); g.addColorStop(1,"rgba(255,255,245,0)");
+    c.fillStyle=g; c.beginPath(); c.arc(0,0,S*0.14,0,TAU); c.fill();
+    _sprites.glint = oc;
+  }
+}
+
 /* ── Bubble sprite — soap-bubble / water-droplet look ────────────────────────
    Built with a dark outer edge + bright rim + iridescent arcs + specular
    highlights so it stays readable on bright, colorful backgrounds
@@ -293,6 +339,7 @@ export function renderBokehSparkle(ctx, w, h, t, bands) {
   const isBubble = _config.shape==="bubble";
   if (isSnow)   buildSprites();        // no-op after first call
   if (isBubble) buildBubbleSprite();
+  if (_config.shape==="circle") buildDustSprites();
 
   const time   = t*0.001;
   const bass   = bands.bass||0;
@@ -439,42 +486,29 @@ export function renderBokehSparkle(ctx, w, h, t, bands) {
         }
 
       } else {
-        // ── Circle: sunset dust motes — warm golden discs with a faint
-        //    chromatic (orange→rose) edge, like lens bokeh at golden hour ──
+        // ── Circle: sunset dust motes — pre-baked warm sprites + twinkle ──
+        //    (sprite drawImage per frame; no gradient allocation → no jank)
         const blurFactor = (1-p.depth)*0.5+0.5;
         const glowR = r*(1+blurFactor*0.8);
 
-        // faint dark contact ring (source-over) so motes read on bright bg
-        if (p.depth > 0.35) {
-          ctx.globalCompositeOperation = "source-over";
-          ctx.strokeStyle = `rgba(60,30,10,${(alpha*0.16).toFixed(3)})`;
-          ctx.lineWidth = Math.max(0.6, r*0.10);
-          ctx.beginPath(); ctx.arc(0,0,glowR*0.78,0,TAU); ctx.stroke();
-          ctx.globalCompositeOperation = "screen";
+        // per-particle twinkle — each mote shimmers on its own rhythm
+        const tw = 0.62 + 0.38*Math.sin(time*p.twinkleSpeed + p.phase);
+        const a2 = Math.min(0.9, alpha*(0.55 + tw*0.75) + freq*0.05);
+
+        const sprite = _sprites.dust && _sprites.dust[p.variant];
+        if (sprite) {
+          const dim = glowR*2.1;
+          ctx.globalAlpha = a2;
+          ctx.drawImage(sprite, -dim/2, -dim/2, dim, dim);
         }
 
-        // warm core → gold mid → rose edge (each mote drifts in hue a little)
-        const hueShift = Math.sin(p.phase)*14;                      // per-particle variety
-        const cR=255, cG=Math.round(238+hueShift*0.3), cB=Math.round(205+hueShift);
-        const mG=Math.round(198+freq*22), mB=Math.round(120+hueShift*1.6);
-        const g = ctx.createRadialGradient(0,0,0,0,0,glowR);
-        g.addColorStop(0,   `rgba(${cR},${cG},${cB},${(alpha*0.90).toFixed(3)})`);   // warm white core
-        g.addColorStop(0.35,`rgba(255,${mG},${mB},${(alpha*0.55).toFixed(3)})`);     // golden body
-        g.addColorStop(0.72,`rgba(255,166,120,${(alpha*0.20).toFixed(3)})`);         // peach falloff
-        g.addColorStop(1,   `rgba(255,140,150,0)`);                                  // rose fade-out
-        ctx.fillStyle=g; ctx.beginPath(); ctx.arc(0,0,glowR,0,TAU); ctx.fill();
-
-        // bright bokeh rim on near, larger motes (classic "donut" disc)
-        if (p.depth > 0.55 && r > minDim*0.004) {
-          ctx.strokeStyle = `rgba(255,236,200,${(alpha*0.45).toFixed(3)})`;
-          ctx.lineWidth = Math.max(0.5, r*0.09);
-          ctx.beginPath(); ctx.arc(0,0,glowR*0.68,0,TAU); ctx.stroke();
-        }
-
-        // tiny sparkle core
-        if (p.depth>0.5 && r>minDim*0.002) {
-          ctx.fillStyle=`rgba(255,252,240,${(alpha*0.50).toFixed(3)})`;
-          ctx.beginPath(); ctx.arc(0,0,r*0.16,0,TAU); ctx.fill();
+        // star glint ✦ on bright near motes — flashes at twinkle peaks
+        if (p.depth > 0.55 && r > minDim*0.003 && tw > 0.72 && _sprites.glint) {
+          const flash = (tw-0.72)/0.28;                 // 0→1 across the peak
+          const gDim  = glowR*(1.6 + flash*1.8);
+          ctx.globalAlpha = Math.min(0.85, alpha*flash*1.4);
+          ctx.rotate(Math.PI/4 + Math.sin(p.phase)*0.3);
+          ctx.drawImage(_sprites.glint, -gDim/2, -gDim/2, gDim, gDim);
         }
       }
     }
@@ -490,5 +524,5 @@ export function resetBokehSparkle() {
   _smoothBands={subBass:0,bass:0,lowMid:0,mid:0,highMid:0,presence:0,brilliance:0,overall:0};
   _beatImpulse=0; _smoothBass=0; _prevW=0; _prevH=0;
   // clear sprite cache so they rebuild on next use
-  delete _sprites.dot; delete _sprites.simple; delete _sprites.crystal; delete _sprites.flake; delete _sprites.bubble;
+  delete _sprites.dot; delete _sprites.simple; delete _sprites.crystal; delete _sprites.flake; delete _sprites.bubble; delete _sprites.dust; delete _sprites.glint;
 }
