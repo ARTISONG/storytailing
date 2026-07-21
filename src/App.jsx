@@ -603,6 +603,7 @@ export default function App() {
                         ["hexagon", "หกเหลี่ยม", "⬡"],
                         ["snowflake", "เกล็ดหิมะ", "❄"],
                         ["raindrop", "หยดฝน", "💧"],
+                        ["bubble", "ฟองอากาศ", "🫧"],
                       ].map(([val, label, icon]) => (
                         <button key={val} onClick={() => setBokehShape(val)} style={{
                           padding: "6px 8px", borderRadius: 6, fontSize: 12, fontFamily: "'Sarabun'", cursor: "pointer",
