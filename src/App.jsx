@@ -708,6 +708,7 @@ export default function App() {
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 4 }}>
                       {[
                         ["circle", "วงกลม", "●"],
+                        ["golddust", "ผงทอง", "✨"],
                         ["hexagon", "หกเหลี่ยม", "⬡"],
                         ["snowflake", "เกล็ดหิมะ", "❄"],
                         ["raindrop", "หยดฝน", "💧"],

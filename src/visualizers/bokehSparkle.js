@@ -14,12 +14,34 @@ const SNOW_LAYERS = [
   { freqKeys:["brilliance"],         depthMin:0.78, depthMax:1.00, sizeMin:0.0160, sizeMax:0.0360, speedMin:0.0060, speedMax:0.0100, countFrac:0.13, alphaBase:0.38, alphaFreq:0.34,  sprite:"flake",   swayAmp:0.00060, rotSpeed:0.0030 },
 ];
 
-/* ── Generic layers (circle / hexagon / raindrop) ────────────────────────── */
+/* ── Generic layers (circle / hexagon) ───────────────────────────────────── */
 const LAYER_DEFS = [
   { freqKeys:["subBass","bass"],     depthMin:0.00, depthMax:0.25, sizeMin:0.016, sizeMax:0.038, countFrac:0.18, alphaBase:0.10, alphaFreq:0.16, rotSpeed:0.0004 },
   { freqKeys:["lowMid","mid"],       depthMin:0.20, depthMax:0.50, sizeMin:0.008, sizeMax:0.022, countFrac:0.30, alphaBase:0.14, alphaFreq:0.20, rotSpeed:0.0008 },
   { freqKeys:["highMid","presence"], depthMin:0.45, depthMax:0.75, sizeMin:0.004, sizeMax:0.013, countFrac:0.30, alphaBase:0.18, alphaFreq:0.24, rotSpeed:0.0012 },
   { freqKeys:["brilliance"],         depthMin:0.70, depthMax:1.00, sizeMin:0.002, sizeMax:0.008, countFrac:0.22, alphaBase:0.22, alphaFreq:0.30, rotSpeed:0.0018 },
+];
+
+/* ── Rain layers — 4 depth tiers of motion-blurred streaks ────────────────────
+   Far tiers: thin, faint, short, slow. Near tiers: thick, bright, long, fast
+   with a defocused foreground halo. `speed`/`length` are fractions of height,
+   `thick` a fraction of the min dimension.                                    */
+const RAIN_LAYERS = [
+  { freqKeys:["subBass","bass"],     depthMin:0.00, depthMax:0.30, countFrac:0.36, lenMin:0.020, lenMax:0.040, thickMin:0.0006, thickMax:0.0011, speedMin:0.020, speedMax:0.030, alphaBase:0.05, alphaFreq:0.05 },
+  { freqKeys:["lowMid","mid"],       depthMin:0.30, depthMax:0.58, countFrac:0.30, lenMin:0.038, lenMax:0.065, thickMin:0.0011, thickMax:0.0018, speedMin:0.030, speedMax:0.044, alphaBase:0.08, alphaFreq:0.08 },
+  { freqKeys:["highMid","presence"], depthMin:0.58, depthMax:0.82, countFrac:0.22, lenMin:0.060, lenMax:0.100, thickMin:0.0018, thickMax:0.0030, speedMin:0.044, speedMax:0.064, alphaBase:0.13, alphaFreq:0.12 },
+  { freqKeys:["brilliance"],         depthMin:0.82, depthMax:1.00, countFrac:0.12, lenMin:0.095, lenMax:0.150, thickMin:0.0030, thickMax:0.0050, speedMin:0.064, speedMax:0.092, alphaBase:0.18, alphaFreq:0.16 },
+];
+
+/* ── Golden-dust layers — soft bokeh discs + fine sparkle glitter ─────────────
+   `role:"bokeh"` = big defocused warm discs (far tiers biggest & softest);
+   `role:"glitter"` = tiny sharp golden specks that twinkle & flare on beats.
+   `sizeMin/Max` are fractions of the min dimension, `drift` of the height.    */
+const GOLD_LAYERS = [
+  { role:"bokeh",   freqKeys:["subBass","bass"],     depthMin:0.00, depthMax:0.28, countFrac:0.16, sizeMin:0.055, sizeMax:0.120, driftMin:0.00016, driftMax:0.00040, alphaBase:0.05, alphaFreq:0.05 },
+  { role:"bokeh",   freqKeys:["lowMid","mid"],       depthMin:0.28, depthMax:0.55, countFrac:0.22, sizeMin:0.030, sizeMax:0.072, driftMin:0.00022, driftMax:0.00052, alphaBase:0.08, alphaFreq:0.09 },
+  { role:"bokeh",   freqKeys:["highMid","presence"], depthMin:0.55, depthMax:0.80, countFrac:0.24, sizeMin:0.015, sizeMax:0.042, driftMin:0.00030, driftMax:0.00070, alphaBase:0.12, alphaFreq:0.14 },
+  { role:"glitter", freqKeys:["brilliance"],         depthMin:0.80, depthMax:1.00, countFrac:0.38, sizeMin:0.004, sizeMax:0.013, driftMin:0.00040, driftMax:0.00100, alphaBase:0.16, alphaFreq:0.28 },
 ];
 
 /* ── Sprite cache — built once, reused every frame ───────────────────────── */
@@ -253,11 +275,81 @@ function buildBubbleSprite() {
   _sprites.bubble = oc;
 }
 
+/* ── Rain streak sprite — soft vertical motion-blur bar ──────────────────────
+   Baked once so the per-frame path is a single drawImage per drop (no
+   per-frame gradients). Transparent at the top (tail) → bright at the bottom
+   (leading head). A wide faint halo under a crisp core gives soft edges.     */
+function buildRainSprite() {
+  if (_sprites.rain) return;
+  const W = 64, H = 256;
+  const oc = new OffscreenCanvas(W, H);
+  const c  = oc.getContext("2d");
+  const grad = (a) => {
+    const g = c.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0,    "rgba(206,228,255,0)");            // tail — fades out
+    g.addColorStop(0.5,  `rgba(206,228,255,${0.06 * a})`);
+    g.addColorStop(0.85, `rgba(222,238,255,${0.55 * a})`);
+    g.addColorStop(1,    `rgba(242,249,255,${0.95 * a})`);  // head — bright
+    return g;
+  };
+  // wide, faint halo → soft horizontal falloff
+  c.fillStyle = grad(0.4);
+  const bw1 = W * 0.5;  c.fillRect((W - bw1) / 2, 0, bw1, H);
+  // crisp bright core
+  c.fillStyle = grad(1);
+  const bw2 = W * 0.18; c.fillRect((W - bw2) / 2, 0, bw2, H);
+  _sprites.rain = oc;
+}
+
+/* ── Golden-dust sprites — bokeh discs (rim-lit) + 4-point glitter glint ──────
+   Bokeh discs get a brighter rim (classic photographic bokeh "donut") with a
+   soft edge, baked in a few warm-gold hue variants. The glint is a golden star
+   used for the sparkle flashes on the fine glitter layer.                     */
+const GOLD_VARIANTS = 5;
+function buildGoldSprites() {
+  if (_sprites.goldBokeh) return;
+
+  const S = 192, cc = S/2, R = S*0.46;
+  const bokeh = [];
+  for (let v = 0; v < GOLD_VARIANTS; v++) {
+    const hue = v/(GOLD_VARIANTS-1) - 0.5;                 // -0.5 … 0.5
+    const gC  = Math.round(206 + hue*28);                  // 192 … 220 (green chan)
+    const bC  = Math.round(120 + hue*70);                  //  85 … 155 (blue  chan)
+    const oc  = new OffscreenCanvas(S, S);
+    const c   = oc.getContext("2d");
+    const g   = c.createRadialGradient(cc, cc, 0, cc, cc, R);
+    g.addColorStop(0,    `rgba(255,${gC},${bC},0.26)`);    // soft warm center
+    g.addColorStop(0.55, `rgba(255,${gC},${bC},0.34)`);
+    g.addColorStop(0.83, `rgba(255,${Math.min(255,gC+22)},${bC},0.62)`); // bright rim
+    g.addColorStop(0.94, `rgba(255,${gC},${bC},0.30)`);
+    g.addColorStop(1,    `rgba(255,${gC},${bC},0)`);       // soft edge fade
+    c.fillStyle = g;
+    c.beginPath(); c.arc(cc, cc, R, 0, TAU); c.fill();
+    bokeh.push(oc);
+  }
+  _sprites.goldBokeh = bokeh;
+
+  // soft warm glow for the glitter twinkle — a round bloom, no hard star arms
+  // (a hot near-white core fading through gold to a soft edge → natural spark)
+  {
+    const S2 = 128, c0 = S2/2;
+    const oc = new OffscreenCanvas(S2, S2);
+    const c  = oc.getContext("2d");
+    const g  = c.createRadialGradient(c0, c0, 0, c0, c0, S2*0.5);
+    g.addColorStop(0,    "rgba(255,250,226,0.98)");   // hot near-white core
+    g.addColorStop(0.16, "rgba(255,240,190,0.72)");
+    g.addColorStop(0.42, "rgba(255,214,134,0.26)");   // warm gold falloff
+    g.addColorStop(1,    "rgba(255,198,118,0)");      // soft edge
+    c.fillStyle = g;
+    c.beginPath(); c.arc(c0, c0, S2*0.5, 0, TAU); c.fill();
+    _sprites.goldSpark = oc;
+  }
+}
+
 /* ── Generic shape functions (non-snow) ──────────────────────────────────── */
 function drawCircle(ctx,r){ctx.beginPath();ctx.arc(0,0,r,0,TAU);}
 function drawHexagon(ctx,r){ctx.beginPath();for(let i=0;i<6;i++){const a=(i/6)*TAU-Math.PI/6;i===0?ctx.moveTo(Math.cos(a)*r,Math.sin(a)*r):ctx.lineTo(Math.cos(a)*r,Math.sin(a)*r);}ctx.closePath();}
-function drawRaindrop(ctx,r){ctx.beginPath();ctx.arc(0,r*0.2,r*0.55,0.3,Math.PI-0.3,false);ctx.lineTo(0,-r*0.95);ctx.closePath();}
-const SHAPE_FN={circle:drawCircle,hexagon:drawHexagon,raindrop:drawRaindrop};
+const SHAPE_FN={circle:drawCircle,hexagon:drawHexagon};
 
 /* ── State ───────────────────────────────────────────────────────────────── */
 let _particles   = null;
@@ -282,8 +374,10 @@ export function getBokehConfig() { return {..._config}; }
 /* ── Particle init ───────────────────────────────────────────────────────── */
 function initParticles(w, h) {
   const isSnow = _config.shape === "snowflake";
-  const layers = isSnow ? SNOW_LAYERS : LAYER_DEFS;
-  const total  = Math.round(280 * _config.quantity);
+  const isRain = _config.shape === "raindrop";
+  const isGold = _config.shape === "golddust";
+  const layers = isSnow ? SNOW_LAYERS : isRain ? RAIN_LAYERS : isGold ? GOLD_LAYERS : LAYER_DEFS;
+  const total  = Math.round((isRain ? 340 : isGold ? 260 : 280) * _config.quantity);
   const dir    = _config.direction;
   const pts    = [];
 
@@ -293,6 +387,37 @@ function initParticles(w, h) {
     for (let i=0; i<count; i++) {
       const idx   = pts.length;
       const depth = L.depthMin + Math.random()*(L.depthMax-L.depthMin);
+
+      if (isGold) {
+        const sizeT    = Math.pow(Math.random(), 1.3);
+        const baseSize = (L.sizeMin + sizeT*(L.sizeMax-L.sizeMin)) * _config.sizeRange;
+        const drift    = L.driftMin + Math.random()*(L.driftMax-L.driftMin);
+        pts.push({
+          x: Math.random()*w, y: Math.random()*h,
+          vx0: (Math.random()-0.5)*0.0003,
+          vy0: dir==="up" ? -drift : dir==="still" ? 0 : drift,
+          baseSize, depth, layer: li, role: L.role,
+          phase:        Math.random()*TAU,
+          twinkleSpeed: 1.0 + Math.random()*2.6,
+          variant:      idx % GOLD_VARIANTS,
+          noiseOff:     idx*2.71 + Math.random()*50,
+        });
+        continue;
+      }
+
+      if (isRain) {
+        pts.push({
+          x: Math.random()*w, y: Math.random()*h,
+          depth, layer: li,
+          speed:  L.speedMin + Math.random()*(L.speedMax-L.speedMin),
+          length: L.lenMin   + Math.random()*(L.lenMax-L.lenMin),
+          thick: (L.thickMin + Math.random()*(L.thickMax-L.thickMin)) * _config.sizeRange,
+          windJitter: (Math.random()-0.5)*0.10,
+          noiseOff: idx*2.71 + Math.random()*50,
+        });
+        continue;
+      }
+
       const sizeT = Math.pow(Math.random(), 1.3);
       const baseSize = (L.sizeMin + sizeT*(L.sizeMax-L.sizeMin)) * _config.sizeRange;
 
@@ -303,7 +428,6 @@ function initParticles(w, h) {
       } else {
         const spd = (0.0008+depth*0.0014)*(0.6+Math.random()*0.8);
         vy0 = dir==="up" ? -spd : dir==="still" ? 0 : spd;
-        if (_config.shape==="raindrop") vy0 *= (dir==="still"?1:3.5+depth*2);
         if (_config.shape==="hexagon")  vy0 *= 0.4;
         if (_config.shape==="bubble")   vy0 *= 0.55;   // bubbles drift lazily
       }
@@ -337,14 +461,18 @@ export function renderBokehSparkle(ctx, w, h, t, bands) {
 
   const isSnow   = _config.shape==="snowflake";
   const isBubble = _config.shape==="bubble";
+  const isRain   = _config.shape==="raindrop";
+  const isGold   = _config.shape==="golddust";
   if (isSnow)   buildSprites();        // no-op after first call
   if (isBubble) buildBubbleSprite();
+  if (isRain)   buildRainSprite();
+  if (isGold)   buildGoldSprites();
   if (_config.shape==="circle") buildDustSprites();
 
   const time   = t*0.001;
   const bass   = bands.bass||0;
   const minDim = Math.min(w,h);
-  const layers = isSnow ? SNOW_LAYERS : LAYER_DEFS;
+  const layers = isSnow ? SNOW_LAYERS : isRain ? RAIN_LAYERS : isGold ? GOLD_LAYERS : LAYER_DEFS;
   const dir    = _config.direction;
 
   for (const k of Object.keys(_smoothBands))
@@ -353,6 +481,9 @@ export function renderBokehSparkle(ctx, w, h, t, bands) {
   _smoothBass  += (bass-_smoothBass)*0.05;
   const spike   = Math.max(0, bass-_smoothBass-0.06);
   _beatImpulse += spike*4; _beatImpulse *= 0.82;
+
+  // coherent wind — one gust drives rain slant & snow drift together (musical sway)
+  const wind = simplex.noise2D(time*0.12, 7.3)*0.10 + Math.sin(time*0.23)*0.05 + _beatImpulse*0.03;
 
   ctx.save();
   ctx.globalCompositeOperation = "screen";
@@ -365,6 +496,95 @@ export function renderBokehSparkle(ctx, w, h, t, bands) {
     for (const fk of L.freqKeys) freq+=(_smoothBands[fk]||0);
     freq /= L.freqKeys.length;
 
+    // ── GOLDEN DUST: soft bokeh discs + fine sparkle glitter ──
+    if (isGold) {
+      // gentle float + noise wander + coherent wind
+      let dy = p.vy0*h*(1+freq*0.3);
+      let dx = p.vx0*h
+             + simplex.noise2D(p.noiseOff, time*0.05)*minDim*0.00022
+             + wind*minDim*0.0008*(0.3+p.depth);
+      if (dir==="still") dy  = simplex.noise2D(p.noiseOff+300, time*0.04)*minDim*0.00022;
+      else               dy += simplex.noise2D(p.noiseOff+200, time*0.05)*minDim*0.00016;
+      p.x += dx; p.y += dy;
+
+      const m = p.baseSize*minDim + 20;
+      if (p.y>h+m)  { p.y=-m;  p.x=Math.random()*w; }
+      if (p.y<-m)   { p.y=h+m; p.x=Math.random()*w; }
+      if (p.x>w+m)    p.x=-m;
+      if (p.x<-m)     p.x=w+m;
+
+      // size: breathe + beat bloom
+      const breathe = 1 + Math.sin(time*0.5+p.phase)*0.08;
+      const bloom   = 1 + _beatImpulse*0.16;
+      const r = p.baseSize*minDim*breathe*bloom*(1+freq*0.12);
+      if (r<0.4) { continue; }
+
+      ctx.save();
+      ctx.translate(p.x, p.y);
+
+      if (p.role === "glitter") {
+        // organic twinkle — two out-of-phase harmonics so flashes feel irregular,
+        // not metronomic. The glow blooms on peaks & beats (soft, no hard star).
+        const tw  = 0.5 + 0.5*Math.sin(time*p.twinkleSpeed + p.phase);
+        const tw2 = tw * (0.7 + 0.3*Math.sin(time*p.twinkleSpeed*2.3 + p.phase*1.7));
+        const a   = Math.min(0.95, (L.alphaBase + freq*L.alphaFreq + _beatImpulse*0.06) * _config.opacity * (0.32+tw2));
+        if (a >= 0.01 && _sprites.goldSpark) {
+          // soft glow that swells on twinkle peaks & beats → natural sparkle bloom
+          const bloom = r * (2.0 + tw2*2.4 + _beatImpulse*1.6);
+          ctx.globalAlpha = a;
+          ctx.drawImage(_sprites.goldSpark, -bloom/2, -bloom/2, bloom, bloom);
+          // tiny crisp hot core keeps the pinpoint "spark" feel
+          ctx.globalAlpha = Math.min(0.95, a*1.1);
+          ctx.fillStyle   = "rgba(255,247,218,1)";
+          ctx.beginPath(); ctx.arc(0, 0, Math.max(0.4, r*0.34), 0, TAU); ctx.fill();
+        }
+      } else {
+        // soft defocused bokeh disc — slow shimmer
+        const sprite = _sprites.goldBokeh[p.variant];
+        const tw = 0.72 + 0.28*Math.sin(time*p.twinkleSpeed*0.5 + p.phase);
+        const a  = Math.min(0.85, (L.alphaBase + freq*L.alphaFreq + _beatImpulse*0.04) * _config.opacity * tw);
+        if (a >= 0.006 && sprite) {
+          const dim = r*2.1;
+          ctx.globalAlpha = a;
+          ctx.drawImage(sprite, -dim/2, -dim/2, dim, dim);
+        }
+      }
+
+      ctx.restore();
+      continue;
+    }
+
+    // ── RAIN: motion-blurred, depth-layered streaks ──────────
+    if (isRain) {
+      const energy = _smoothBands.overall || 0;
+      const surge  = 1 + energy*0.5 + _beatImpulse*0.22;          // downpour speeds up on beats/peaks
+      const vy = p.speed*h*surge;
+      const vx = vy*(wind + p.windJitter);
+      p.x += vx; p.y += vy;
+
+      const streak = p.length*h*(1 + energy*0.25 + _beatImpulse*0.20); // streaks stretch on the beat
+      if (p.y - streak > h) { p.y = -Math.random()*h*0.25; p.x = Math.random()*w; }
+      if (p.x > w+60)      p.x -= (w+120);
+      else if (p.x < -60)  p.x += (w+120);
+
+      const alpha = Math.min(0.72, (L.alphaBase + freq*L.alphaFreq + _beatImpulse*0.05) * _config.opacity);
+      if (alpha < 0.006) continue;
+
+      const tw = Math.max(0.6, p.thick*minDim);
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(Math.atan2(-vx, vy));                             // align streak to fall direction
+      // near-layer defocus halo → foreground depth-of-field
+      if (p.depth > 0.8) {
+        ctx.globalAlpha = alpha*0.32;
+        ctx.drawImage(_sprites.rain, -(tw*2.6)/2, -streak*1.04, tw*2.6, streak*1.04);
+      }
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(_sprites.rain, -tw/2, -streak, tw, streak);
+      ctx.restore();
+      continue;
+    }
+
     // ── Movement ─────────────────────────────────────────────
     const speedBoost = 1 + freq*0.45 + _beatImpulse*0.10;
     let dy = p.vy0*h*speedBoost;
@@ -375,6 +595,7 @@ export function renderBokehSparkle(ctx, w, h, t, bands) {
       const sway = Math.sin(time*p.swayFreq + p.swayPhase)
                  + simplex.noise2D(p.noiseOff, time*0.025) * 0.3;
       dx += sway * p.swayAmp * minDim;
+      dx += wind * minDim * 0.0018 * (0.35 + p.depth);   // coherent wind gust — near flakes pushed more
       dy *= 1 + simplex.noise2D(p.noiseOff+10, time*0.04)*0.15;
       if (_beatImpulse > 0.05)
         dx += simplex.noise2D(p.noiseOff+400, time*1.5)*_beatImpulse*p.depth*minDim*0.0003;
@@ -386,8 +607,6 @@ export function renderBokehSparkle(ctx, w, h, t, bands) {
           + simplex.noise2D(p.noiseOff, time*0.05)*minDim*0.00020;
       const ny=simplex.noise2D(p.noiseOff+200, time*0.05)*minDim*0.00020;
       dy = dir==="still" ? ny : dy*0.75+ny;
-    } else if (_config.shape==="raindrop") {
-      dx += simplex.noise2D(p.noiseOff, time*0.02)*minDim*0.00012;
     } else if (_config.shape==="hexagon") {
       dx += simplex.noise2D(p.x/w*2, time*0.06+p.noiseOff)*minDim*0.0007;
       const ny=simplex.noise2D(p.y/h*2, time*0.06+p.noiseOff+100)*minDim*0.0005;
@@ -430,13 +649,19 @@ export function renderBokehSparkle(ctx, w, h, t, bands) {
 
       const dim = r * 2.6;          // display size = arm radius × 2.6 (sprite has margin)
       ctx.translate(p.x, p.y);
+      // depth-of-field bokeh — near flakes get a soft defocused glow behind them
+      if (p.depth > 0.72 && _sprites.dot) {
+        const gdim = dim * 1.9;
+        ctx.globalAlpha = alpha * 0.28;
+        ctx.drawImage(_sprites.dot, -gdim/2, -gdim/2, gdim, gdim);
+      }
       ctx.rotate(p.rotAngle);
       ctx.globalAlpha = alpha;
       ctx.drawImage(sprite, -dim/2, -dim/2, dim, dim);
 
     } else {
       ctx.translate(p.x, p.y);
-      ctx.rotate(p.rotAngle);   // hexagon/raindrop tumble slowly
+      ctx.rotate(p.rotAngle);   // hexagon tumbles slowly
 
       const shape = _config.shape;
 
@@ -453,10 +678,10 @@ export function renderBokehSparkle(ctx, w, h, t, bands) {
         ctx.globalAlpha = Math.min(1, alpha*1.5);
         ctx.drawImage(sprite, -dim/2, -dim/2, dim, dim);
 
-      } else if (shape === "hexagon" || shape === "raindrop") {
+      } else if (shape === "hexagon") {
         // ── Crisp outline — 2-pass stroke (glow + crisp) ─────
         const shapeFn = SHAPE_FN[shape];
-        const sr  = r * (shape === "raindrop" ? 0.88 : 0.82);
+        const sr  = r * 0.82;
         const lw  = Math.max(0.6, r * 0.072);
 
         // Soft inner fill (gives the "lit interior" feel)
@@ -524,5 +749,5 @@ export function resetBokehSparkle() {
   _smoothBands={subBass:0,bass:0,lowMid:0,mid:0,highMid:0,presence:0,brilliance:0,overall:0};
   _beatImpulse=0; _smoothBass=0; _prevW=0; _prevH=0;
   // clear sprite cache so they rebuild on next use
-  delete _sprites.dot; delete _sprites.simple; delete _sprites.crystal; delete _sprites.flake; delete _sprites.bubble; delete _sprites.dust; delete _sprites.glint;
+  delete _sprites.dot; delete _sprites.simple; delete _sprites.crystal; delete _sprites.flake; delete _sprites.bubble; delete _sprites.dust; delete _sprites.glint; delete _sprites.rain; delete _sprites.goldBokeh; delete _sprites.goldSpark;
 }
