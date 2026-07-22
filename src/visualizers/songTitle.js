@@ -74,8 +74,9 @@ export function renderSongTitle(ctx, w, h, title, title2, bands, t, pos, fontSiz
 
     /* ── step A: grab & blur background pixels ── */
     let blurredBg = null;
+    let snap = null;                    // reused below for rim colour sampling
     try {
-      const snap    = ctx.getImageData(sx, sy, sw, sh);
+      snap          = ctx.getImageData(sx, sy, sw, sh);
       const offBg   = new OffscreenCanvas(sw, sh);
       const offBgCtx = offBg.getContext("2d");
       offBgCtx.putImageData(snap, 0, 0);
@@ -85,37 +86,42 @@ export function renderSongTitle(ctx, w, h, title, title2, bands, t, pos, fontSiz
       blurredBg = offBg;
     } catch (_) {}
 
-    /* ── step B: composite blurred bg masked to text shape ── */
+    /* ── step B: composite blurred bg masked to text shape ──
+       Work in a region-sized offscreen (sw×sh), not a full-canvas one — a
+       full w×h canvas per line per frame is a large needless allocation. */
     if (blurredBg) {
       try {
-        const offMask    = new OffscreenCanvas(w, h);
+        const offMask    = new OffscreenCanvas(sw, sh);
         const offMaskCtx = offMask.getContext("2d");
         offMaskCtx.textAlign    = "center";
         offMaskCtx.textBaseline = "middle";
         offMaskCtx.font         = font;
 
-        // draw blurred bg (offset-corrected)
-        offMaskCtx.drawImage(blurredBg, sx, sy, sw, sh);
+        // blurred bg fills the region
+        offMaskCtx.drawImage(blurredBg, 0, 0);
 
-        // punch through only where text is: destination-in keeps only overlap
+        // punch through only where text is (coords shifted into region space)
         offMaskCtx.globalCompositeOperation = "destination-in";
         offMaskCtx.fillStyle = "rgba(255,255,255,1)";
-        offMaskCtx.fillText(text, cx, ty);
+        offMaskCtx.fillText(text, cx - sx, ty - sy);
 
-        // composite frosted text onto main canvas
-        ctx.drawImage(offMask, 0, 0);
+        // composite frosted text back onto the main canvas at the region origin
+        ctx.drawImage(offMask, sx, sy);
       } catch (_) {}
     }
 
-    /* ── step C: sample bg edge colors for rim gradient ── */
+    /* ── step C: sample bg edge colors for rim gradient ──
+       Read from the snapshot we already grabbed (CPU-side array indexing)
+       instead of calling ctx.getImageData per point — each live readback
+       forces a GPU sync (~15-20ms), and there are ~8 of them per line. */
+    const snapData = snap ? snap.data : null;
     const sc = (sx2, sy2) => {
-      try {
-        const d = ctx.getImageData(
-          Math.max(0, Math.min(w - 1, sx2 | 0)),
-          Math.max(0, Math.min(h - 1, sy2 | 0)), 1, 1
-        ).data;
-        return [d[0], d[1], d[2]];
-      } catch { return [180, 180, 180]; }
+      if (!snapData) return [180, 180, 180];
+      let lx = (sx2 | 0) - sx, ly = (sy2 | 0) - sy;
+      lx = lx < 0 ? 0 : lx >= sw ? sw - 1 : lx;
+      ly = ly < 0 ? 0 : ly >= sh ? sh - 1 : ly;
+      const o = (ly * sw + lx) * 4;
+      return [snapData[o], snapData[o + 1], snapData[o + 2]];
     };
     // glassy rim: boost saturation, keep hue close to actual bg scene color
     const rim = ([r, g, b], a) => {
@@ -134,24 +140,38 @@ export function renderSongTitle(ctx, w, h, title, title2, bands, t, pos, fontSiz
 
     ctx.font = font;
 
-    /* ── step D: outer glow halo (bg hue) ── */
+    /* ── step D+E: soft glows via cheap filter-blurred text sprites ──
+       ctx.shadowBlur on large text costs ~100ms/frame (and scales brutally
+       to 4K); a region-sized filter-blur sprite is a few ms and drawImage-ed
+       back — same soft look, a fraction of the cost. */
     const avgC = [
       (cT[0]+cB[0]+cL[0]+cR[0])>>2,
       (cT[1]+cB[1]+cL[1]+cR[1])>>2,
       (cT[2]+cB[2]+cL[2]+cR[2])>>2,
     ];
-    ctx.shadowOffsetX = 0; ctx.shadowOffsetY = 0;
-    ctx.shadowBlur    = fs * 0.9 + overall * fs * 0.3;
-    ctx.shadowColor   = `rgba(${avgC[0]},${avgC[1]},${avgC[2]},${0.45 + brill * 0.2 + bass * 0.1})`;
-    ctx.fillStyle     = "rgba(255,255,255,0.01)";
-    ctx.fillText(text, cx, ty);
+    const makeGlow = (blurPx, color) => {
+      const oc = new OffscreenCanvas(sw, sh);
+      const c  = oc.getContext("2d");
+      c.textAlign = "center"; c.textBaseline = "middle"; c.font = font;
+      c.filter = `blur(${Math.max(1, blurPx | 0)}px)`;
+      c.fillStyle = color;
+      c.fillText(text, cx - sx, ty - sy);
+      c.filter = "none";
+      return oc;
+    };
 
-    /* ── step E: white frost overlay — thin, lets blur show through ── */
-    ctx.shadowBlur  = fs * 0.35;
-    ctx.shadowColor = `rgba(255,255,255,${0.5 + brill * 0.15})`;
+    // D: outer glow halo in the background hue
+    const halo = makeGlow(fs * 0.42, `rgb(${avgC[0]},${avgC[1]},${avgC[2]})`);
+    ctx.globalAlpha = Math.min(1, 0.45 + brill * 0.2 + bass * 0.1);
+    ctx.drawImage(halo, sx, sy);
+
+    // E: white frost — soft glow sprite + a thin crisp fill on top
+    const frost = makeGlow(fs * 0.16, "#ffffff");
+    ctx.globalAlpha = Math.min(1, 0.38 + brill * 0.12);
+    ctx.drawImage(frost, sx, sy);
+    ctx.globalAlpha = 1;
     ctx.fillStyle   = `rgba(255,255,255,${isSecond ? 0.12 : 0.18})`;
     ctx.fillText(text, cx, ty);
-    ctx.shadowBlur = 0; ctx.shadowColor = "rgba(0,0,0,0)";
 
     /* ── step F: bg-sampled gradient rim — thin, crisp, glassy ── */
     // sample 4 more midpoints for smoother gradient around letters
@@ -193,13 +213,11 @@ export function renderSongTitle(ctx, w, h, title, title2, bands, t, pos, fontSiz
     ctx.fillStyle = vg;
     ctx.fillText(text, cx, ty);
 
-    /* ── step I: bass beat flare ── */
+    /* ── step I: bass beat flare — reuse the white glow sprite ── */
     if (bass > 0.38) {
-      ctx.shadowBlur  = fs * 0.5;
-      ctx.shadowColor = `rgba(255,255,255,${(bass - 0.38) * 0.8})`;
-      ctx.fillStyle   = `rgba(255,255,255,${(bass - 0.38) * 0.3})`;
-      ctx.fillText(text, cx, ty);
-      ctx.shadowBlur  = 0; ctx.shadowColor = "rgba(0,0,0,0)";
+      ctx.globalAlpha = Math.min(1, (bass - 0.38) * 0.9);
+      ctx.drawImage(frost, sx, sy);
+      ctx.globalAlpha = 1;
     }
   };
 

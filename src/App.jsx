@@ -135,6 +135,7 @@ export default function App() {
 
   const RES = { "720p": [1280, 720], "1080p": [1920, 1080], "1440p": [2560, 1440], "4K": [3840, 2160] };
   const BITRATE = { "720p": 8_000_000, "1080p": 20_000_000, "1440p": 40_000_000, "4K": 80_000_000 };
+  const PREVIEW_MAX_DIM = 1280;   // cap live-preview render size (export stays full-res)
 
   useEffect(() => { tracksRef.current = tracks; }, [tracks]);
 
@@ -214,7 +215,12 @@ export default function App() {
     stopAll();
     const canvas = canvasRef.current; if (!canvas) return;
     const ctx = canvas.getContext("2d");
-    const [cw, ch] = RES[resolution]; canvas.width = cw; canvas.height = ch;
+    // Preview renders at a capped resolution — it's only displayed ≤880px wide,
+    // so rendering full 4K here just tanks the frame rate. Export stays full-res.
+    const [fullW, fullH] = RES[resolution];
+    const pScale = Math.min(1, PREVIEW_MAX_DIM / Math.max(fullW, fullH));
+    const cw = Math.round(fullW * pScale), ch = Math.round(fullH * pScale);
+    canvas.width = cw; canvas.height = ch;
     let sampleRate = 44100;
     const readyTracks = tracksRef.current.filter(t => t.buffer);
 
