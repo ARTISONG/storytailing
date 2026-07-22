@@ -3,11 +3,9 @@
 export function renderSongTitle(ctx, w, h, title, title2, bands, t, pos, fontSizePct, fontSizePct2) {
   if (!title && !title2) return;
 
-  const time    = t * 0.001;
   const bass    = bands?.bass       || 0;
   const overall = bands?.overall    || 0;
   const brill   = bands?.brilliance || 0;
-  const breathe = Math.sin(time * 0.18) * 4 + Math.sin(time * 0.09) * 1.5;
 
   ctx.save();
   ctx.textAlign    = "center";
@@ -49,7 +47,7 @@ export function renderSongTitle(ctx, w, h, title, title2, bands, t, pos, fontSiz
   };
   const anc = posMap[pos] || posMap["bottom-center"];
   const cx  = anc.cx;
-  const cy  = anc.cy + breathe;
+  const cy  = anc.cy;
   const y1  = line1 && line2 ? cy - totalH / 2 + line1.textH / 2 : cy;
   const y2  = line1 && line2 ? cy + totalH / 2 - line2.textH / 2 : cy;
 
