@@ -3,6 +3,7 @@ import { analyzeBands } from "./utils/audio.js";
 import { detectBPM, createMixer, currentTrack } from "./utils/mixer.js";
 import { renderSongTitle } from "./visualizers/songTitle.js";
 import { renderBokehSparkle, setBokehConfig } from "./visualizers/bokehSparkle.js";
+import { renderAudioSpectrum, setSpectrumConfig } from "./visualizers/audioSpectrum.js";
 
 /* ═══════════════════════════════════════════════════════════
    DOWNLOAD HELPER
@@ -119,6 +120,12 @@ export default function App() {
   const [bokehShape, setBokehShape] = useState("circle");
   const [bokehOpacity, setBokehOpacity] = useState(1.0);
   const [bokehDirection, setBokehDirection] = useState("down");
+  const [spectrumEnabled, setSpectrumEnabled] = useState(false);
+  const [spectrumStyle, setSpectrumStyle] = useState("bars");
+  const [spectrumColorMode, setSpectrumColorMode] = useState("gradient");
+  const [spectrumColor, setSpectrumColor] = useState("#3fa9ff");
+  const [spectrumHeight, setSpectrumHeight] = useState(0.20);
+  const [spectrumOpacity, setSpectrumOpacity] = useState(1.0);
 
   const canvasRef = useRef(null);
   const animRef = useRef(null);
@@ -142,6 +149,10 @@ export default function App() {
   useEffect(() => {
     setBokehConfig({ quantity: bokehQuantity, sizeRange: bokehSizeRange, shape: bokehShape, opacity: bokehOpacity, direction: bokehDirection });
   }, [bokehQuantity, bokehSizeRange, bokehShape, bokehOpacity, bokehDirection]);
+
+  useEffect(() => {
+    setSpectrumConfig({ style: spectrumStyle, colorMode: spectrumColorMode, color: spectrumColor, height: spectrumHeight, opacity: spectrumOpacity });
+  }, [spectrumStyle, spectrumColorMode, spectrumColor, spectrumHeight, spectrumOpacity]);
 
   // YouTube chapter list — track start times across all loops
   const youtubeChapters = useMemo(() => {
@@ -262,6 +273,9 @@ export default function App() {
       // Bokeh
       if (bokehEnabled) renderBokehSparkle(ctx, cw, ch, elapsed, bands);
 
+      // Audio equalizer spectrum (bottom of frame)
+      if (spectrumEnabled) renderAudioSpectrum(ctx, cw, ch, elapsed, bands);
+
       // Title
       let line1 = songTitle || audioName;
       if (titleMode === "dynamic" && mixer) {
@@ -273,7 +287,7 @@ export default function App() {
       fc++; animRef.current = requestAnimationFrame(loop);
     };
     animRef.current = requestAnimationFrame(loop); setPlaying(true);
-  }, [resolution, tracks, crossfadeSec, titleMode, audioName, songTitle, songTitle2, showTitle, titlePos, titleFontSize, titleFontSize2, bokehEnabled, bgTransition, getBgForPlayhead, stopAll]);
+  }, [resolution, tracks, crossfadeSec, titleMode, audioName, songTitle, songTitle2, showTitle, titlePos, titleFontSize, titleFontSize2, bokehEnabled, spectrumEnabled, bgTransition, getBgForPlayhead, stopAll]);
 
   const handleFiles = useCallback(async (fileList) => {
     const files = Array.from(fileList || []).filter(f =>
@@ -397,6 +411,7 @@ export default function App() {
           else drawBg(octx, cw, ch, bg.img);
 
           if (bokehEnabled) renderBokehSparkle(octx, cw, ch, elapsed, bands);
+          if (spectrumEnabled) renderAudioSpectrum(octx, cw, ch, elapsed, bands);
 
           let expLine1 = songTitle || audioName;
           if (titleMode === "dynamic" && mixer) {
@@ -449,7 +464,7 @@ export default function App() {
     } finally {
       setExporting(false); exportTimerRef.current = null;
     }
-  }, [loops, resolution, tracks, crossfadeSec, titleMode, audioName, songTitle, songTitle2, showTitle, titlePos, titleFontSize, titleFontSize2, bokehEnabled, bgTransition, endLogo, getBgForPlayhead, stopPreviewOnly]);
+  }, [loops, resolution, tracks, crossfadeSec, titleMode, audioName, songTitle, songTitle2, showTitle, titlePos, titleFontSize, titleFontSize2, bokehEnabled, spectrumEnabled, bgTransition, endLogo, getBgForPlayhead, stopPreviewOnly]);
 
   useEffect(() => () => stopAll(), [stopAll]);
 
@@ -771,6 +786,92 @@ export default function App() {
                         }}>{label}</button>
                       ))}
                     </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Audio Equalizer Spectrum Settings */}
+            <div style={{ marginTop: 16, background: "rgba(8,6,4,0.6)", border: "1px solid #1A1814", borderRadius: 10, padding: "16px 18px" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div onClick={() => setSpectrumEnabled(!spectrumEnabled)} style={{ width: 18, height: 18, borderRadius: 3, border: "1px solid " + (spectrumEnabled ? gold(0.5) : "#1E1C18"), display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", background: spectrumEnabled ? "rgba(212,175,55,0.1)" : "transparent", fontSize: 13, color: gold(0.7) }}>{spectrumEnabled ? "✓" : ""}</div>
+                  <span style={{ fontSize: 15, color: gold(0.6), fontFamily: "'Sarabun'", fontWeight: 300, letterSpacing: 1 }}>Audio Equalizer Spectrum</span>
+                </div>
+                <span style={{ fontSize: 12, color: "#5A5448", fontFamily: "'Sarabun'", fontWeight: 200 }}>สเปกตรัมเสียงด้านล่าง</span>
+              </div>
+
+              {spectrumEnabled && (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                  {/* Style selector */}
+                  <div>
+                    <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 8 }}>รูปแบบ (Style)</label>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 4 }}>
+                      {[
+                        ["bars", "แท่ง", "▮"],
+                        ["mirror", "แท่งสะท้อน", "◫"],
+                        ["wave", "คลื่น", "〰"],
+                        ["dots", "จุด", "⣿"],
+                        ["line", "เส้นคลื่น", "◠"],
+                      ].map(([val, label, icon]) => (
+                        <button key={val} onClick={() => setSpectrumStyle(val)} style={{
+                          padding: "6px 8px", borderRadius: 6, fontSize: 12, fontFamily: "'Sarabun'", cursor: "pointer",
+                          border: spectrumStyle === val ? "1px solid " + gold(0.5) : "1px solid #1E1C18",
+                          background: spectrumStyle === val ? "rgba(212,175,55,0.08)" : "rgba(8,6,4,0.8)",
+                          color: spectrumStyle === val ? gold(0.8) : "#5A5448", transition: "all 0.2s",
+                          display: "flex", alignItems: "center", gap: 4, justifyContent: "center",
+                        }}>
+                          <span style={{ fontSize: 14 }}>{icon}</span> {label}
+                        </button>
+                      ))}
+                    </div>
+
+                    <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 12 }}>โหมดสี</label>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      {[
+                        ["gradient", "เข้ม→จาง"],
+                        ["colorful", "หลากสี"],
+                      ].map(([val, label]) => (
+                        <button key={val} onClick={() => setSpectrumColorMode(val)} style={{
+                          flex: 1, padding: "5px 6px", borderRadius: 6, fontSize: 12, fontFamily: "'Sarabun'", cursor: "pointer",
+                          border: spectrumColorMode === val ? "1px solid " + gold(0.5) : "1px solid #1E1C18",
+                          background: spectrumColorMode === val ? "rgba(212,175,55,0.08)" : "rgba(8,6,4,0.8)",
+                          color: spectrumColorMode === val ? gold(0.8) : "#5A5448", transition: "all 0.2s",
+                        }}>{label}</button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Color + sliders */}
+                  <div>
+                    <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6 }}>
+                      สี {spectrumColorMode === "colorful" ? "(ใช้เฉพาะโหมดเข้ม→จาง)" : ""}
+                    </label>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input type="color" value={spectrumColor} onChange={e => setSpectrumColor(e.target.value)}
+                        disabled={spectrumColorMode === "colorful"}
+                        style={{ width: 44, height: 28, borderRadius: 6, border: "1px solid #1E1C18", background: "transparent", cursor: spectrumColorMode === "colorful" ? "not-allowed" : "pointer", opacity: spectrumColorMode === "colorful" ? 0.4 : 1 }} />
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                        {["#3fa9ff", "#37e0c8", "#ff4a9d", "#ffb03f", "#a97bff", "#4affa0"].map(c => (
+                          <div key={c} onClick={() => { setSpectrumColorMode("gradient"); setSpectrumColor(c); }}
+                            style={{ width: 18, height: 18, borderRadius: 4, background: c, cursor: "pointer", border: spectrumColor === c ? "2px solid #fff" : "1px solid #00000060" }} />
+                        ))}
+                      </div>
+                    </div>
+
+                    <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 12 }}>
+                      ความสูง ({Math.round(spectrumHeight * 100)}%)
+                    </label>
+                    <input type="range" min={8} max={40} value={Math.round(spectrumHeight * 100)}
+                      onChange={e => setSpectrumHeight(Number(e.target.value) / 100)}
+                      style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
+
+                    <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>
+                      ความเข้ม ({Math.round(spectrumOpacity * 100)}%)
+                    </label>
+                    <input type="range" min={20} max={100} value={Math.round(spectrumOpacity * 100)}
+                      onChange={e => setSpectrumOpacity(Number(e.target.value) / 100)}
+                      style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
                   </div>
                 </div>
               )}
