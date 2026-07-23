@@ -135,9 +135,14 @@ export function renderAudioSpectrum(ctx, w, h, t, bands) {
       ctx.restore();
     }
 
+    // at tiny heights the fixed minimums would flatten the motion — scale them down
+    const minBar  = Math.min(2 * scale, areaH * 0.10);
+    const capMax  = Math.min(r * 2 + 2 * scale, areaH * 0.30);
+    const peakTh  = Math.min(2 * scale, areaH * 0.12);
+
     for (let i = 0; i < BAR_COUNT; i++) {
       const x    = marginX + i * step + gap / 2;
-      const barH = Math.max(2 * scale, _bars[i] * areaH * (mirror ? 0.5 : 1));
+      const barH = Math.max(minBar, _bars[i] * areaH * (mirror ? 0.5 : 1));
 
       ctx.fillStyle = fill;
       if (mirror) {
@@ -152,7 +157,7 @@ export function renderAudioSpectrum(ctx, w, h, t, bands) {
       // bright tip cap → dimensional gloss
       const capHue = colorful ? rainbowHue(i / BAR_COUNT, drift) : bh;
       ctx.fillStyle = hsla(capHue, colorful ? 90 : bs, 84, op * 0.95);
-      const capH = Math.min(barH, r * 2 + 2 * scale);
+      const capH = Math.min(barH * 0.5, capMax);
       roundTopRect(ctx, x, (mirror ? centerY - barH : baseY - barH), barW, capH, r); ctx.fill();
       if (mirror) { roundTopRect(ctx, x, centerY + barH - capH, barW, capH, r); ctx.fill(); }
 
@@ -160,7 +165,7 @@ export function renderAudioSpectrum(ctx, w, h, t, bands) {
       if (!mirror && _peaks[i] > 0.03) {
         const py = baseY - _peaks[i] * areaH;
         ctx.fillStyle = hsla(capHue, colorful ? 90 : bs, 90, op * 0.8);
-        ctx.fillRect(x, py - 2 * scale, barW, 2 * scale);
+        ctx.fillRect(x, py - peakTh, barW, peakTh);
       }
     }
 

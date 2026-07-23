@@ -862,7 +862,7 @@ export default function App() {
                     <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 12 }}>
                       ความสูง ({Math.round(spectrumHeight * 100)}%)
                     </label>
-                    <input type="range" min={8} max={40} value={Math.round(spectrumHeight * 100)}
+                    <input type="range" min={1} max={40} value={Math.round(spectrumHeight * 100)}
                       onChange={e => setSpectrumHeight(Number(e.target.value) / 100)}
                       style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
 
