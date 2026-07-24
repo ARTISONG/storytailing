@@ -126,6 +126,7 @@ export default function App() {
   const [spectrumColor, setSpectrumColor] = useState("#3fa9ff");
   const [spectrumHeight, setSpectrumHeight] = useState(0.20);
   const [spectrumOpacity, setSpectrumOpacity] = useState(1.0);
+  const [spectrumYOffset, setSpectrumYOffset] = useState(0);
 
   const canvasRef = useRef(null);
   const animRef = useRef(null);
@@ -151,8 +152,8 @@ export default function App() {
   }, [bokehQuantity, bokehSizeRange, bokehShape, bokehOpacity, bokehDirection]);
 
   useEffect(() => {
-    setSpectrumConfig({ style: spectrumStyle, colorMode: spectrumColorMode, color: spectrumColor, height: spectrumHeight, opacity: spectrumOpacity });
-  }, [spectrumStyle, spectrumColorMode, spectrumColor, spectrumHeight, spectrumOpacity]);
+    setSpectrumConfig({ style: spectrumStyle, colorMode: spectrumColorMode, color: spectrumColor, height: spectrumHeight, opacity: spectrumOpacity, yOffset: spectrumYOffset });
+  }, [spectrumStyle, spectrumColorMode, spectrumColor, spectrumHeight, spectrumOpacity, spectrumYOffset]);
 
   // YouTube chapter list — track start times across all loops
   const youtubeChapters = useMemo(() => {
@@ -810,6 +811,7 @@ export default function App() {
                       {[
                         ["bars", "แท่ง", "▮"],
                         ["mirror", "แท่งสะท้อน", "◫"],
+                        ["ribbon", "ริบบิ้นไหม", "≋"],
                         ["wave", "คลื่น", "〰"],
                         ["dots", "จุด", "⣿"],
                         ["line", "เส้นคลื่น", "◠"],
@@ -864,6 +866,13 @@ export default function App() {
                     </label>
                     <input type="range" min={1} max={40} value={Math.round(spectrumHeight * 100)}
                       onChange={e => setSpectrumHeight(Number(e.target.value) / 100)}
+                      style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
+
+                    <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>
+                      ยกขึ้น (แกน Y) ({Math.round(spectrumYOffset * 100)}%)
+                    </label>
+                    <input type="range" min={0} max={85} value={Math.round(spectrumYOffset * 100)}
+                      onChange={e => setSpectrumYOffset(Number(e.target.value) / 100)}
                       style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
 
                     <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>

@@ -6,15 +6,16 @@
 
 const TAU = Math.PI * 2;
 
-let _config = { style: "bars", colorMode: "gradient", color: "#3fa9ff", height: 0.20, opacity: 1.0 };
+let _config = { style: "bars", colorMode: "gradient", color: "#3fa9ff", height: 0.20, opacity: 1.0, yOffset: 0 };
 
 const BAR_COUNT = 56;
-let _bars  = null;   // smoothed magnitudes 0..1
-let _peaks = null;   // peak-hold caps 0..1
+let _bars   = null;   // smoothed magnitudes 0..1
+let _peaks  = null;   // peak-hold caps 0..1
+let _energy = 0;      // smoothed overall level (drives the flowing ribbon)
 
 export function setSpectrumConfig(cfg) { Object.assign(_config, cfg); }
 export function getSpectrumConfig()     { return { ..._config }; }
-export function resetAudioSpectrum()    { _bars = null; _peaks = null; }
+export function resetAudioSpectrum()    { _bars = null; _peaks = null; _energy = 0; }
 
 /* ── colour helpers ──────────────────────────────────────────────────────── */
 function hexToHsl(hex) {
@@ -79,6 +80,7 @@ export function renderAudioSpectrum(ctx, w, h, t, bands) {
   if (!freq && !wave) return;
   if (freq) computeBars(freq);
   if (!_bars) return;
+  _energy += ((bands.overall || 0) - _energy) * 0.12;
 
   const time     = t * 0.001;
   const op       = _config.opacity;
@@ -88,10 +90,10 @@ export function renderAudioSpectrum(ctx, w, h, t, bands) {
   const drift    = time * 8;
 
   const areaH   = h * _config.height;
-  const baseY   = h - h * 0.045;               // baseline near the bottom edge
-  const marginX = w * 0.06;
-  const areaW   = w - marginX * 2;
-  const scale   = w / 1280;                    // size unit that tracks resolution
+  const baseY   = h - h * (_config.yOffset || 0);   // yOffset 0 = flush with the very bottom
+  const marginX = 0;                                 // full-width, edge to edge
+  const areaW   = w;
+  const scale   = w / 1280;                          // size unit that tracks resolution
 
   // shared fills — one allocation per frame, not per bar
   const vGrad = (a = 1) => {                    // vertical: dark base → light tip
@@ -135,10 +137,8 @@ export function renderAudioSpectrum(ctx, w, h, t, bands) {
       ctx.restore();
     }
 
-    // at tiny heights the fixed minimums would flatten the motion — scale them down
-    const minBar  = Math.min(2 * scale, areaH * 0.10);
-    const capMax  = Math.min(r * 2 + 2 * scale, areaH * 0.30);
-    const peakTh  = Math.min(2 * scale, areaH * 0.12);
+    // at tiny heights the fixed minimum would flatten the motion — scale it down
+    const minBar = Math.min(2 * scale, areaH * 0.10);
 
     for (let i = 0; i < BAR_COUNT; i++) {
       const x    = marginX + i * step + gap / 2;
@@ -147,25 +147,24 @@ export function renderAudioSpectrum(ctx, w, h, t, bands) {
       ctx.fillStyle = fill;
       if (mirror) {
         roundTopRect(ctx, x, centerY - barH, barW, barH, r);        ctx.fill();
-        roundTopRect(ctx, x, centerY + barH, barW, barH, r);         // lower half
         ctx.save(); ctx.translate(0, centerY * 2); ctx.scale(1, -1);
         roundTopRect(ctx, x, centerY - barH, barW, barH, r); ctx.fill(); ctx.restore();
       } else {
         roundTopRect(ctx, x, baseY - barH, barW, barH, r); ctx.fill();
       }
 
-      // bright tip cap → dimensional gloss
-      const capHue = colorful ? rainbowHue(i / BAR_COUNT, drift) : bh;
-      ctx.fillStyle = hsla(capHue, colorful ? 90 : bs, 84, op * 0.95);
-      const capH = Math.min(barH * 0.5, capMax);
-      roundTopRect(ctx, x, (mirror ? centerY - barH : baseY - barH), barW, capH, r); ctx.fill();
-      if (mirror) { roundTopRect(ctx, x, centerY + barH - capH, barW, capH, r); ctx.fill(); }
-
-      // peak-hold cap (upright only)
-      if (!mirror && _peaks[i] > 0.03) {
-        const py = baseY - _peaks[i] * areaH;
-        ctx.fillStyle = hsla(capHue, colorful ? 90 : bs, 90, op * 0.8);
-        ctx.fillRect(x, py - peakTh, barW, peakTh);
+      // soft sheen on the rounded tip — a gentle highlight, not a hard cap
+      const tipHue = colorful ? rainbowHue(i / BAR_COUNT, drift) : bh;
+      const tipH   = Math.min(barH, r * 1.6 + scale);
+      const tg = ctx.createLinearGradient(0, (mirror ? centerY - barH : baseY - barH), 0, (mirror ? centerY - barH : baseY - barH) + tipH);
+      tg.addColorStop(0, hsla(tipHue, colorful ? 85 : Math.max(0, bs - 8), 80, op * 0.75));
+      tg.addColorStop(1, hsla(tipHue, colorful ? 85 : bs, 70, 0));
+      ctx.fillStyle = tg;
+      roundTopRect(ctx, x, (mirror ? centerY - barH : baseY - barH), barW, tipH, r); ctx.fill();
+      if (mirror) {
+        ctx.save(); ctx.translate(0, centerY * 2); ctx.scale(1, -1);
+        ctx.fillStyle = tg;
+        roundTopRect(ctx, x, centerY - barH, barW, tipH, r); ctx.fill(); ctx.restore();
       }
     }
 
@@ -240,6 +239,53 @@ export function renderAudioSpectrum(ctx, w, h, t, bands) {
     // crisp line
     path(); ctx.lineWidth = 2.4 * scale;
     ctx.strokeStyle = colorful ? hGrad() : hsla(bh, Math.min(100, bs + 6), 66, op); ctx.stroke();
+
+  } else if (style === "ribbon") {
+    // silky flowing ribbons — layered translucent waves with a bright core.
+    // Amplitude swells with the music; a spindle window keeps them thin at the
+    // edges and full in the middle (that signature audio-wave silhouette).
+    const cY   = baseY - areaH * 0.5;
+    const amp  = areaH * (0.16 + _energy * 0.6);
+    const RN   = 7;
+    const STEPS = 120;
+    ctx.globalCompositeOperation = "lighter";     // additive → silky overlap glow
+
+    const ribbonPath = (f1, f2, sp1, sp2, ph, ampR, yOff) => {
+      ctx.beginPath();
+      for (let i = 0; i <= STEPS; i++) {
+        const xt = i / STEPS;
+        const win = Math.pow(Math.sin(xt * Math.PI), 1.4);           // spindle envelope
+        const disp = Math.sin(xt * f1 * Math.PI + time * sp1 + ph) * 0.62
+                   + Math.sin(xt * f2 * Math.PI - time * sp2 + ph * 1.6) * 0.38;
+        const x = xt * w;
+        const y = cY + disp * ampR * win + yOff;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+    };
+
+    for (let r = 0; r < RN; r++) {
+      const rf   = r / (RN - 1) - 0.5;                                // -0.5..0.5
+      const hue  = colorful ? rainbowHue(r / RN, drift * 0.4) : (bh + rf * 46 + 360) % 360;
+      const sat  = colorful ? 82 : Math.max(30, bs);
+      const ampR = amp * (0.55 + 0.45 * Math.sin(r * 1.27 + 1));
+      const f1 = 2.2 + r * 0.55, f2 = 3.6 + r * 0.42;
+      const yOff = rf * areaH * 0.10;
+      // soft wide glow
+      ribbonPath(f1, f2, 0.55 + r * 0.12, 0.85 + r * 0.15, r * 1.7, ampR, yOff);
+      ctx.lineWidth = (7 + r * 1.4) * scale;
+      ctx.strokeStyle = hsla(hue, sat, 56, op * 0.05);  ctx.stroke();
+      // silky core strand
+      ctx.lineWidth = 1.8 * scale;
+      ctx.strokeStyle = hsla(hue, sat, 64, op * 0.42);  ctx.stroke();
+    }
+
+    // bright white central filament (the signature glowing core streak)
+    ribbonPath(3.4, 6.1, 0.7, 1.05, 0.4, amp * 0.5, 0);
+    ctx.lineWidth = 6 * scale;   ctx.strokeStyle = hsla(colorful ? 195 : bh, 40, 96, op * 0.10); ctx.stroke();
+    ribbonPath(3.4, 6.1, 0.7, 1.05, 0.4, amp * 0.5, 0);
+    ctx.lineWidth = 1.6 * scale; ctx.strokeStyle = `rgba(255,255,255,${op * 0.72})`; ctx.stroke();
+
+    ctx.globalCompositeOperation = "source-over";
   }
 
   ctx.restore();
