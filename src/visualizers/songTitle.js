@@ -160,17 +160,35 @@ export function renderSongTitle(ctx, w, h, title, title2, bands, t, pos, fontSiz
       return oc;
     };
 
-    // D: outer glow halo in the background hue
+    // adaptive contrast: how bright is the background behind this line?
+    const lum    = (avgC[0] * 0.299 + avgC[1] * 0.587 + avgC[2] * 0.114);
+    const bright = Math.max(0, Math.min(1, (lum - 120) / 95));   // 0 dark … 1 very bright
+
+    // D0: dark backing halo — only kicks in over bright/busy backgrounds so the
+    //     light frosted text keeps a readable edge instead of dissolving.
+    if (bright > 0.02) {
+      const dark = makeGlow(fs * 0.5, "rgb(6,8,16)");
+      ctx.globalAlpha = bright * 0.6;
+      ctx.drawImage(dark, sx, sy);
+      // a tighter, denser core shadow right under the strokes
+      const dark2 = makeGlow(fs * 0.22, "rgb(6,8,16)");
+      ctx.globalAlpha = bright * 0.5;
+      ctx.drawImage(dark2, sx, sy);
+      ctx.globalAlpha = 1;
+    }
+
+    // D: outer glow halo in the background hue — fades out as the bg gets bright
     const halo = makeGlow(fs * 0.42, `rgb(${avgC[0]},${avgC[1]},${avgC[2]})`);
-    ctx.globalAlpha = Math.min(1, 0.45 + brill * 0.2 + bass * 0.1);
+    ctx.globalAlpha = Math.min(1, (0.45 + brill * 0.2 + bass * 0.1) * (1 - bright * 0.8));
     ctx.drawImage(halo, sx, sy);
 
     // E: white frost — soft glow sprite + a thin crisp fill on top
+    //    (both lifted on bright backgrounds for extra separation)
     const frost = makeGlow(fs * 0.16, "#ffffff");
-    ctx.globalAlpha = Math.min(1, 0.38 + brill * 0.12);
+    ctx.globalAlpha = Math.min(1, 0.38 + brill * 0.12 + bright * 0.25);
     ctx.drawImage(frost, sx, sy);
     ctx.globalAlpha = 1;
-    ctx.fillStyle   = `rgba(255,255,255,${isSecond ? 0.12 : 0.18})`;
+    ctx.fillStyle   = `rgba(255,255,255,${(isSecond ? 0.12 : 0.18) + bright * 0.25})`;
     ctx.fillText(text, cx, ty);
 
     /* ── step F: bg-sampled gradient rim — thin, crisp, glassy ── */
@@ -200,10 +218,10 @@ export function renderSongTitle(ctx, w, h, title, title2, bands, t, pos, fontSiz
     ctx.strokeStyle = strokeG;
     ctx.strokeText(text, cx, ty);
 
-    /* ── step G: hairline white — razor-sharp inner edge ── */
-    ctx.lineWidth   = Math.max(0.25, fs * 0.005);
+    /* ── step G: hairline white — razor-sharp inner edge (thicker on bright bg) ── */
+    ctx.lineWidth   = Math.max(0.25, fs * (0.005 + bright * 0.006));
     ctx.lineJoin    = "miter";
-    ctx.strokeStyle = `rgba(255,255,255,${isSecond ? 0.38 : 0.55})`;
+    ctx.strokeStyle = `rgba(255,255,255,${Math.min(1, (isSecond ? 0.38 : 0.55) + bright * 0.35)})`;
     ctx.strokeText(text, cx, ty);
 
     /* ── step H: top-lit specular — subtle, on top of glass ── */
