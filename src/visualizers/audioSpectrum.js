@@ -295,12 +295,17 @@ export function renderAudioSpectrum(ctx, w, h, t, bands) {
     for (let r = 0; r < RN; r++) {
       const rf = r / (RN - 1) - 0.5;
       const t01 = r / (RN - 1);                       // 0 … 1 across the strands
+      // each strand gets its own weight, with thickness and opacity inversely
+      // coupled: broad strands read as sheer veils, fine ones as dense threads
+      const wf = 0.35 + 0.65 * ((Math.sin(r * 2.399) + 1) / 2);
       ribbons.push({
         hue:  colorful ? rainbowHue(r / RN, drift * 0.4) : (bh + rf * 24 + 360) % 360,
         sat:  colorful ? 82 : Math.max(45, bs),
         // in single-colour mode the strands step deep → light, so the picked
         // colour actually reads as a dark→pale fade instead of a white glow
         lum:  colorful ? 58 : 30 + t01 * 44,
+        thick: (1.2 + wf * 7) * scale,
+        alpha: op * (0.95 - wf * 0.72),
         ampR: amp * (0.55 + 0.45 * Math.sin(r * 1.27 + 1)),
         f1: 2.2 + r * 0.55, f2: 3.6 + r * 0.42,
         sp1: 0.55 + r * 0.12, sp2: 0.85 + r * 0.15,
@@ -328,7 +333,7 @@ export function renderAudioSpectrum(ctx, w, h, t, bands) {
     rc.globalCompositeOperation = "source-over";
     rc.globalAlpha = 1;
 
-    const strokeRibbon = (rb, r) => {
+    const strokeRibbon = (rb) => {
       rc.beginPath();
       for (let i = 0; i <= STEPS; i++) {
         const xt = i / STEPS;
@@ -336,13 +341,16 @@ export function renderAudioSpectrum(ctx, w, h, t, bands) {
         const y = ribbonY(rb, xt, win);
         i === 0 ? rc.moveTo(xt * w, y) : rc.lineTo(xt * w, y);
       }
-      // soft halo, then the silky strand itself in its own shade
-      rc.lineWidth = (5 + r * 1.0) * scale;
-      rc.strokeStyle = hsla(rb.hue, rb.sat, Math.min(88, rb.lum + 14), op * 0.16); rc.stroke();
-      rc.lineWidth = 2.0 * scale;
-      rc.strokeStyle = hsla(rb.hue, rb.sat, rb.lum, op * 0.9);                     rc.stroke();
+      // sheer halo, then the strand at its own weight — broad strands stay
+      // translucent, fine ones stay dense, which is what gives the depth
+      rc.lineWidth   = rb.thick * 2.6;
+      rc.strokeStyle = hsla(rb.hue, rb.sat, Math.min(90, rb.lum + 16), rb.alpha * 0.22);
+      rc.stroke();
+      rc.lineWidth   = rb.thick;
+      rc.strokeStyle = hsla(rb.hue, rb.sat, rb.lum, rb.alpha);
+      rc.stroke();
     };
-    for (let r = 0; r < RN; r++) strokeRibbon(ribbons[r], r);
+    for (let r = 0; r < RN; r++) strokeRibbon(ribbons[r]);
 
     /* ── emit + draw dust (ribbondust only) — a light sprinkle, kept cheap ── */
     if (hasDust) {
