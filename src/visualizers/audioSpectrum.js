@@ -9,13 +9,16 @@ const TAU = Math.PI * 2;
 let _config = { style: "bars", colorMode: "gradient", color: "#3fa9ff", height: 0.20, opacity: 1.0, yOffset: 0 };
 
 const BAR_COUNT = 56;
-let _bars   = null;   // smoothed magnitudes 0..1
-let _peaks  = null;   // peak-hold caps 0..1
-let _energy = 0;      // smoothed overall level (drives the flowing ribbon)
+let _bars       = null;   // smoothed magnitudes 0..1
+let _peaks      = null;   // peak-hold caps 0..1
+let _energy     = 0;      // smoothed overall level (drives the flowing ribbon)
+let _energySlow = 0;      // slow follower — its lag behind _energy = a "pluck"
+let _dust       = [];     // ribbon dust motes
+let _lastT      = 0;      // for frame dt
 
 export function setSpectrumConfig(cfg) { Object.assign(_config, cfg); }
 export function getSpectrumConfig()     { return { ..._config }; }
-export function resetAudioSpectrum()    { _bars = null; _peaks = null; _energy = 0; }
+export function resetAudioSpectrum()    { _bars = null; _peaks = null; _energy = 0; _energySlow = 0; _dust = []; _lastT = 0; }
 
 /* ── colour helpers ──────────────────────────────────────────────────────── */
 function hexToHsl(hex) {
@@ -241,49 +244,119 @@ export function renderAudioSpectrum(ctx, w, h, t, bands) {
     ctx.strokeStyle = colorful ? hGrad() : hsla(bh, Math.min(100, bs + 6), 66, op); ctx.stroke();
 
   } else if (style === "ribbon") {
-    // silky flowing ribbons — layered translucent waves with a bright core.
-    // Amplitude swells with the music; a spindle window keeps them thin at the
-    // edges and full in the middle (that signature audio-wave silhouette).
-    const cY   = baseY - areaH * 0.5;
-    const amp  = areaH * (0.16 + _energy * 0.6);
-    const RN   = 7;
+    // silky flowing ribbons — layered translucent waves with a bright core,
+    // shedding coloured dust like a plucked silk thread. A spindle window keeps
+    // them thin at the edges and full in the middle (the audio-wave silhouette).
+    const cY    = baseY - areaH * 0.5;
+    const amp   = areaH * (0.16 + _energy * 0.6);
+    const RN    = 7;
     const STEPS = 120;
+
+    // frame dt + "pluck" strength (how fast the energy is surging right now)
+    let dt = t - _lastT; _lastT = t;
+    if (!(dt > 0) || dt > 100) dt = 16;
+    _energySlow += (_energy - _energySlow) * 0.05;
+    const pluck = Math.max(0, _energy - _energySlow);
+
+    // ribbon displacement at a given x (same formula used for stroke + emission)
+    const ribbonY = (rb, xt, win) =>
+      cY + (Math.sin(xt * rb.f1 * Math.PI + time * rb.sp1 + rb.ph) * 0.62
+          + Math.sin(xt * rb.f2 * Math.PI - time * rb.sp2 + rb.ph * 1.6) * 0.38) * rb.ampR * win + rb.yOff;
+
+    const ribbons = [];
+    for (let r = 0; r < RN; r++) {
+      const rf = r / (RN - 1) - 0.5;
+      ribbons.push({
+        hue:  colorful ? rainbowHue(r / RN, drift * 0.4) : (bh + rf * 46 + 360) % 360,
+        sat:  colorful ? 82 : Math.max(30, bs),
+        ampR: amp * (0.55 + 0.45 * Math.sin(r * 1.27 + 1)),
+        f1: 2.2 + r * 0.55, f2: 3.6 + r * 0.42,
+        sp1: 0.55 + r * 0.12, sp2: 0.85 + r * 0.15,
+        ph: r * 1.7, yOff: rf * areaH * 0.10,
+      });
+    }
+
     ctx.globalCompositeOperation = "lighter";     // additive → silky overlap glow
 
-    const ribbonPath = (f1, f2, sp1, sp2, ph, ampR, yOff) => {
+    const strokeRibbon = (rb, r) => {
       ctx.beginPath();
       for (let i = 0; i <= STEPS; i++) {
         const xt = i / STEPS;
-        const win = Math.pow(Math.sin(xt * Math.PI), 1.4);           // spindle envelope
-        const disp = Math.sin(xt * f1 * Math.PI + time * sp1 + ph) * 0.62
-                   + Math.sin(xt * f2 * Math.PI - time * sp2 + ph * 1.6) * 0.38;
-        const x = xt * w;
-        const y = cY + disp * ampR * win + yOff;
-        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        const win = Math.pow(Math.sin(xt * Math.PI), 1.4);
+        const y = ribbonY(rb, xt, win);
+        i === 0 ? ctx.moveTo(xt * w, y) : ctx.lineTo(xt * w, y);
       }
-    };
-
-    for (let r = 0; r < RN; r++) {
-      const rf   = r / (RN - 1) - 0.5;                                // -0.5..0.5
-      const hue  = colorful ? rainbowHue(r / RN, drift * 0.4) : (bh + rf * 46 + 360) % 360;
-      const sat  = colorful ? 82 : Math.max(30, bs);
-      const ampR = amp * (0.55 + 0.45 * Math.sin(r * 1.27 + 1));
-      const f1 = 2.2 + r * 0.55, f2 = 3.6 + r * 0.42;
-      const yOff = rf * areaH * 0.10;
-      // soft wide glow
-      ribbonPath(f1, f2, 0.55 + r * 0.12, 0.85 + r * 0.15, r * 1.7, ampR, yOff);
       ctx.lineWidth = (7 + r * 1.4) * scale;
-      ctx.strokeStyle = hsla(hue, sat, 56, op * 0.05);  ctx.stroke();
-      // silky core strand
+      ctx.strokeStyle = hsla(rb.hue, rb.sat, 56, op * 0.05);  ctx.stroke();
       ctx.lineWidth = 1.8 * scale;
-      ctx.strokeStyle = hsla(hue, sat, 64, op * 0.42);  ctx.stroke();
+      ctx.strokeStyle = hsla(rb.hue, rb.sat, 64, op * 0.42);  ctx.stroke();
+    };
+    for (let r = 0; r < RN; r++) strokeRibbon(ribbons[r], r);
+
+    /* ── emit dust from the ribbons (coloured per strand) ── */
+    const MAX_DUST = 560;
+    const emitScale = dt / 16;
+    for (let r = 0; r < RN && _dust.length < MAX_DUST; r++) {
+      const rb = ribbons[r];
+      let n = (0.22 + _energy * 3.2 + pluck * 46) * emitScale;
+      n = Math.floor(n) + (Math.random() < (n % 1) ? 1 : 0);
+      for (let k = 0; k < n && _dust.length < MAX_DUST; k++) {
+        const xt  = Math.random();
+        const win = Math.pow(Math.sin(xt * Math.PI), 1.4);
+        const rawDisp = Math.sin(xt * rb.f1 * Math.PI + time * rb.sp1 + rb.ph) * 0.62
+                      + Math.sin(xt * rb.f2 * Math.PI - time * rb.sp2 + rb.ph * 1.6) * 0.38;
+        // favour the crests — that's where a plucked thread sheds dust
+        if (Math.random() > 0.22 + Math.abs(rawDisp) * win) continue;
+        const y   = cY + rawDisp * rb.ampR * win + rb.yOff;
+        const dir = y < cY ? -1 : 1;
+        const puff = 12 + Math.random() * 26 + pluck * 130;
+        _dust.push({
+          x: xt * w, y,
+          vx: (Math.random() - 0.5) * 34,
+          vy: dir * puff * 0.42 - (7 + Math.random() * 22),   // puff out + gentle rise
+          life: 750 + Math.random() * 1150, maxLife: 0,
+          size: (0.7 + Math.random() * 1.7) * scale,
+          hue: rb.hue, sat: rb.sat, a0: 0.24 + Math.random() * 0.30,
+        });
+        _dust[_dust.length - 1].maxLife = _dust[_dust.length - 1].life;
+      }
     }
 
+    /* ── update + draw dust (additive, so it glows softly) ── */
+    let wIdx = 0;
+    for (let i = 0; i < _dust.length; i++) {
+      const p = _dust[i];
+      p.life -= dt;
+      if (p.life <= 0) continue;                    // dead → dropped
+      const s = dt / 1000;
+      p.x += p.vx * s; p.y += p.vy * s;
+      p.vx *= 0.985; p.vy = p.vy * 0.985 - 3 * s;   // drag + faint buoyancy
+      const lf = p.life / p.maxLife;
+      const a  = Math.sin(lf * Math.PI) * p.a0 * op; // fade in then out
+      if (a > 0.004) {
+        const rr = p.size * (1 + (1 - lf) * 1.2);    // disperse as it ages
+        ctx.fillStyle = hsla(p.hue, p.sat, 70, a * 0.5);
+        ctx.beginPath(); ctx.arc(p.x, p.y, rr * 1.9, 0, TAU); ctx.fill();
+        ctx.fillStyle = hsla(p.hue, p.sat, 84, a);
+        ctx.beginPath(); ctx.arc(p.x, p.y, rr * 0.7, 0, TAU); ctx.fill();
+      }
+      _dust[wIdx++] = p;                            // keep alive
+    }
+    _dust.length = wIdx;
+
     // bright white central filament (the signature glowing core streak)
-    ribbonPath(3.4, 6.1, 0.7, 1.05, 0.4, amp * 0.5, 0);
-    ctx.lineWidth = 6 * scale;   ctx.strokeStyle = hsla(colorful ? 195 : bh, 40, 96, op * 0.10); ctx.stroke();
-    ribbonPath(3.4, 6.1, 0.7, 1.05, 0.4, amp * 0.5, 0);
-    ctx.lineWidth = 1.6 * scale; ctx.strokeStyle = `rgba(255,255,255,${op * 0.72})`; ctx.stroke();
+    const coreRb = { f1: 3.4, f2: 6.1, sp1: 0.7, sp2: 1.05, ph: 0.4, ampR: amp * 0.5, yOff: 0 };
+    const coreStroke = () => {
+      ctx.beginPath();
+      for (let i = 0; i <= STEPS; i++) {
+        const xt = i / STEPS;
+        const win = Math.pow(Math.sin(xt * Math.PI), 1.4);
+        const y = ribbonY(coreRb, xt, win);
+        i === 0 ? ctx.moveTo(xt * w, y) : ctx.lineTo(xt * w, y);
+      }
+    };
+    coreStroke(); ctx.lineWidth = 6 * scale;   ctx.strokeStyle = hsla(colorful ? 195 : bh, 40, 96, op * 0.10); ctx.stroke();
+    coreStroke(); ctx.lineWidth = 1.6 * scale; ctx.strokeStyle = `rgba(255,255,255,${op * 0.72})`; ctx.stroke();
 
     ctx.globalCompositeOperation = "source-over";
   }
