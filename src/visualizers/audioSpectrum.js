@@ -15,6 +15,30 @@ let _energy     = 0;      // smoothed overall level (drives the flowing ribbon)
 let _energySlow = 0;      // slow follower — its lag behind _energy = a "pluck"
 let _dust       = [];     // ribbon dust motes
 let _lastT      = 0;      // for frame dt
+let _dustSprites = null;  // pre-baked mote sprites, one per hue bucket
+let _ribbonCv   = null;   // half-res scratch canvas for the ribbon styles
+let _ribbonCtx  = null;
+
+/* Dust motes are baked once per hue bucket: drawing a sprite is far cheaper
+   than building an hsla() string and rasterising two arcs per mote per frame. */
+const DUST_HUES = 12;
+function buildDustSprites() {
+  if (_dustSprites) return;
+  const S = 32, c0 = S / 2;
+  _dustSprites = [];
+  for (let i = 0; i < DUST_HUES; i++) {
+    const hue = Math.round((i / DUST_HUES) * 360);
+    const oc = new OffscreenCanvas(S, S);
+    const c  = oc.getContext("2d");
+    const g  = c.createRadialGradient(c0, c0, 0, c0, c0, c0);
+    g.addColorStop(0,    `hsla(${hue},90%,88%,1)`);
+    g.addColorStop(0.28, `hsla(${hue},88%,74%,0.55)`);
+    g.addColorStop(1,    `hsla(${hue},85%,62%,0)`);
+    c.fillStyle = g;
+    c.beginPath(); c.arc(c0, c0, c0, 0, TAU); c.fill();
+    _dustSprites.push(oc);
+  }
+}
 
 export function setSpectrumConfig(cfg) { Object.assign(_config, cfg); }
 export function getSpectrumConfig()     { return { ..._config }; }
@@ -243,14 +267,18 @@ export function renderAudioSpectrum(ctx, w, h, t, bands) {
     path(); ctx.lineWidth = 2.4 * scale;
     ctx.strokeStyle = colorful ? hGrad() : hsla(bh, Math.min(100, bs + 6), 66, op); ctx.stroke();
 
-  } else if (style === "ribbon") {
-    // silky flowing ribbons — layered translucent waves with a bright core,
-    // shedding coloured dust like a plucked silk thread. A spindle window keeps
-    // them thin at the edges and full in the middle (the audio-wave silhouette).
+  } else if (style === "ribbon" || style === "ribbondust") {
+    // silky flowing ribbons — layered translucent waves with a bright core. The
+    // "ribbondust" variant also sheds coloured dust like a plucked silk thread.
+    // A spindle window keeps them thin at the edges and full in the middle.
+    const hasDust = style === "ribbondust";
     const cY    = baseY - areaH * 0.5;
     const amp   = areaH * (0.16 + _energy * 0.6);
     const RN    = 7;
-    const STEPS = 120;
+    // Wave curves are low-frequency, so a coarse polyline is indistinguishable
+    // from a fine one — and these are wide additive strokes spanning the whole
+    // frame, so every extra segment costs real fill.
+    const STEPS = 64;
 
     // frame dt + "pluck" strength (how fast the energy is surging right now)
     let dt = t - _lastT; _lastT = t;
@@ -276,88 +304,112 @@ export function renderAudioSpectrum(ctx, w, h, t, bands) {
       });
     }
 
-    ctx.globalCompositeOperation = "lighter";     // additive → silky overlap glow
+    /* The ribbon is all wide additive strokes spanning the full frame, which is
+       pure fill-rate — at 1080p+ it alone blew the frame budget. Draw it at half
+       resolution and upscale: 4x less fill, and the content is soft glow so the
+       upscale is invisible. */
+    const RW = Math.max(2, Math.round(w * 0.5)), RH = Math.max(2, Math.round(h * 0.5));
+    if (!_ribbonCv || _ribbonCv.width !== RW || _ribbonCv.height !== RH) {
+      _ribbonCv  = new OffscreenCanvas(RW, RH);
+      _ribbonCtx = _ribbonCv.getContext("2d");
+    }
+    const rc = _ribbonCtx;
+    rc.setTransform(1, 0, 0, 1, 0, 0);
+    rc.clearRect(0, 0, RW, RH);
+    rc.setTransform(0.5, 0, 0, 0.5, 0, 0);   // keep using full-res coordinates
+    rc.lineJoin = "round"; rc.lineCap = "round";
+    rc.globalCompositeOperation = "lighter";  // additive → silky overlap glow
 
     const strokeRibbon = (rb, r) => {
-      ctx.beginPath();
+      rc.beginPath();
       for (let i = 0; i <= STEPS; i++) {
         const xt = i / STEPS;
         const win = Math.pow(Math.sin(xt * Math.PI), 1.4);
         const y = ribbonY(rb, xt, win);
-        i === 0 ? ctx.moveTo(xt * w, y) : ctx.lineTo(xt * w, y);
+        i === 0 ? rc.moveTo(xt * w, y) : rc.lineTo(xt * w, y);
       }
-      ctx.lineWidth = (7 + r * 1.4) * scale;
-      ctx.strokeStyle = hsla(rb.hue, rb.sat, 56, op * 0.05);  ctx.stroke();
-      ctx.lineWidth = 1.8 * scale;
-      ctx.strokeStyle = hsla(rb.hue, rb.sat, 64, op * 0.42);  ctx.stroke();
+      rc.lineWidth = (4 + r * 0.8) * scale;
+      rc.strokeStyle = hsla(rb.hue, rb.sat, 58, op * 0.085); rc.stroke();
+      rc.lineWidth = 1.8 * scale;
+      rc.strokeStyle = hsla(rb.hue, rb.sat, 64, op * 0.42);  rc.stroke();
     };
     for (let r = 0; r < RN; r++) strokeRibbon(ribbons[r], r);
 
-    /* ── emit dust from the ribbons (coloured per strand) ── */
-    const MAX_DUST = 560;
-    const emitScale = dt / 16;
-    for (let r = 0; r < RN && _dust.length < MAX_DUST; r++) {
-      const rb = ribbons[r];
-      let n = (0.22 + _energy * 3.2 + pluck * 46) * emitScale;
-      n = Math.floor(n) + (Math.random() < (n % 1) ? 1 : 0);
-      for (let k = 0; k < n && _dust.length < MAX_DUST; k++) {
-        const xt  = Math.random();
-        const win = Math.pow(Math.sin(xt * Math.PI), 1.4);
-        const rawDisp = Math.sin(xt * rb.f1 * Math.PI + time * rb.sp1 + rb.ph) * 0.62
-                      + Math.sin(xt * rb.f2 * Math.PI - time * rb.sp2 + rb.ph * 1.6) * 0.38;
-        // favour the crests — that's where a plucked thread sheds dust
-        if (Math.random() > 0.22 + Math.abs(rawDisp) * win) continue;
-        const y   = cY + rawDisp * rb.ampR * win + rb.yOff;
-        const dir = y < cY ? -1 : 1;
-        const puff = 12 + Math.random() * 26 + pluck * 130;
-        _dust.push({
-          x: xt * w, y,
-          vx: (Math.random() - 0.5) * 34,
-          vy: dir * puff * 0.42 - (7 + Math.random() * 22),   // puff out + gentle rise
-          life: 750 + Math.random() * 1150, maxLife: 0,
-          size: (0.7 + Math.random() * 1.7) * scale,
-          hue: rb.hue, sat: rb.sat, a0: 0.24 + Math.random() * 0.30,
-        });
-        _dust[_dust.length - 1].maxLife = _dust[_dust.length - 1].life;
-      }
-    }
+    /* ── emit + draw dust (ribbondust only) — a light sprinkle, kept cheap ── */
+    if (hasDust) {
+      buildDustSprites();
 
-    /* ── update + draw dust (additive, so it glows softly) ── */
-    let wIdx = 0;
-    for (let i = 0; i < _dust.length; i++) {
-      const p = _dust[i];
-      p.life -= dt;
-      if (p.life <= 0) continue;                    // dead → dropped
-      const s = dt / 1000;
-      p.x += p.vx * s; p.y += p.vy * s;
-      p.vx *= 0.985; p.vy = p.vy * 0.985 - 3 * s;   // drag + faint buoyancy
-      const lf = p.life / p.maxLife;
-      const a  = Math.sin(lf * Math.PI) * p.a0 * op; // fade in then out
-      if (a > 0.004) {
-        const rr = p.size * (1 + (1 - lf) * 1.2);    // disperse as it ages
-        ctx.fillStyle = hsla(p.hue, p.sat, 70, a * 0.5);
-        ctx.beginPath(); ctx.arc(p.x, p.y, rr * 1.9, 0, TAU); ctx.fill();
-        ctx.fillStyle = hsla(p.hue, p.sat, 84, a);
-        ctx.beginPath(); ctx.arc(p.x, p.y, rr * 0.7, 0, TAU); ctx.fill();
+      const MAX_DUST = 150;
+      const emitScale = dt / 16;
+      for (let r = 0; r < RN && _dust.length < MAX_DUST; r++) {
+        const rb = ribbons[r];
+        let n = (0.05 + _energy * 0.55 + pluck * 10) * emitScale;
+        n = Math.floor(n) + (Math.random() < (n % 1) ? 1 : 0);
+        for (let k = 0; k < n && _dust.length < MAX_DUST; k++) {
+          const xt  = Math.random();
+          const win = Math.pow(Math.sin(xt * Math.PI), 1.4);
+          const rawDisp = Math.sin(xt * rb.f1 * Math.PI + time * rb.sp1 + rb.ph) * 0.62
+                        + Math.sin(xt * rb.f2 * Math.PI - time * rb.sp2 + rb.ph * 1.6) * 0.38;
+          // favour the crests — that's where a plucked thread sheds dust
+          if (Math.random() > 0.22 + Math.abs(rawDisp) * win) continue;
+          const y   = cY + rawDisp * rb.ampR * win + rb.yOff;
+          const dir = y < cY ? -1 : 1;
+          const puff = 12 + Math.random() * 26 + pluck * 130;
+          const p = {
+            x: xt * w, y,
+            vx: (Math.random() - 0.5) * 34,
+            vy: dir * puff * 0.42 - (7 + Math.random() * 22),   // puff out + gentle rise
+            life: 700 + Math.random() * 900, maxLife: 0,
+            size: (0.7 + Math.random() * 1.7) * scale,
+            sprite: _dustSprites[Math.round(rb.hue / 360 * DUST_HUES) % DUST_HUES],
+            a0: 0.22 + Math.random() * 0.26,
+          };
+          p.maxLife = p.life;
+          _dust.push(p);
+        }
       }
-      _dust[wIdx++] = p;                            // keep alive
+
+      let wIdx = 0;
+      for (let i = 0; i < _dust.length; i++) {
+        const p = _dust[i];
+        p.life -= dt;
+        if (p.life <= 0) continue;                    // dead → dropped
+        const s = dt / 1000;
+        p.x += p.vx * s; p.y += p.vy * s;
+        p.vx *= 0.985; p.vy = p.vy * 0.985 - 3 * s;   // drag + faint buoyancy
+        const lf = p.life / p.maxLife;
+        const a  = Math.sin(lf * Math.PI) * p.a0 * op; // fade in then out
+        if (a > 0.004) {
+          const dim = p.size * (1 + (1 - lf) * 1.2) * 5;  // disperses as it ages
+          rc.globalAlpha = a;
+          rc.drawImage(p.sprite, p.x - dim / 2, p.y - dim / 2, dim, dim);
+        }
+        _dust[wIdx++] = p;                            // keep alive
+      }
+      _dust.length = wIdx;
+      rc.globalAlpha = 1;
+    } else if (_dust.length) {
+      _dust.length = 0;                               // switched away — drop motes
     }
-    _dust.length = wIdx;
 
     // bright white central filament (the signature glowing core streak)
     const coreRb = { f1: 3.4, f2: 6.1, sp1: 0.7, sp2: 1.05, ph: 0.4, ampR: amp * 0.5, yOff: 0 };
     const coreStroke = () => {
-      ctx.beginPath();
+      rc.beginPath();
       for (let i = 0; i <= STEPS; i++) {
         const xt = i / STEPS;
         const win = Math.pow(Math.sin(xt * Math.PI), 1.4);
         const y = ribbonY(coreRb, xt, win);
-        i === 0 ? ctx.moveTo(xt * w, y) : ctx.lineTo(xt * w, y);
+        i === 0 ? rc.moveTo(xt * w, y) : rc.lineTo(xt * w, y);
       }
     };
-    coreStroke(); ctx.lineWidth = 6 * scale;   ctx.strokeStyle = hsla(colorful ? 195 : bh, 40, 96, op * 0.10); ctx.stroke();
-    coreStroke(); ctx.lineWidth = 1.6 * scale; ctx.strokeStyle = `rgba(255,255,255,${op * 0.72})`; ctx.stroke();
+    coreStroke(); rc.lineWidth = 4 * scale;   rc.strokeStyle = hsla(colorful ? 195 : bh, 40, 96, op * 0.14); rc.stroke();
+    coreStroke(); rc.lineWidth = 1.6 * scale; rc.strokeStyle = `rgba(255,255,255,${op * 0.72})`; rc.stroke();
 
+    // composite the half-res ribbon back up, still additively
+    ctx.globalCompositeOperation = "lighter";
+    ctx.globalAlpha = 1;
+    ctx.drawImage(_ribbonCv, 0, 0, w, h);
     ctx.globalCompositeOperation = "source-over";
   }
 
