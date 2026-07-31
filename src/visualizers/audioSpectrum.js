@@ -294,9 +294,13 @@ export function renderAudioSpectrum(ctx, w, h, t, bands) {
     const ribbons = [];
     for (let r = 0; r < RN; r++) {
       const rf = r / (RN - 1) - 0.5;
+      const t01 = r / (RN - 1);                       // 0 … 1 across the strands
       ribbons.push({
-        hue:  colorful ? rainbowHue(r / RN, drift * 0.4) : (bh + rf * 46 + 360) % 360,
-        sat:  colorful ? 82 : Math.max(30, bs),
+        hue:  colorful ? rainbowHue(r / RN, drift * 0.4) : (bh + rf * 24 + 360) % 360,
+        sat:  colorful ? 82 : Math.max(45, bs),
+        // in single-colour mode the strands step deep → light, so the picked
+        // colour actually reads as a dark→pale fade instead of a white glow
+        lum:  colorful ? 58 : 30 + t01 * 44,
         ampR: amp * (0.55 + 0.45 * Math.sin(r * 1.27 + 1)),
         f1: 2.2 + r * 0.55, f2: 3.6 + r * 0.42,
         sp1: 0.55 + r * 0.12, sp2: 0.85 + r * 0.15,
@@ -318,7 +322,11 @@ export function renderAudioSpectrum(ctx, w, h, t, bands) {
     rc.clearRect(0, 0, RW, RH);
     rc.setTransform(0.5, 0, 0, 0.5, 0, 0);   // keep using full-res coordinates
     rc.lineJoin = "round"; rc.lineCap = "round";
-    rc.globalCompositeOperation = "lighter";  // additive → silky overlap glow
+    // Normal alpha, not additive: additive overlap drove every strand toward
+    // white (losing the chosen colour), and compositing additively onto a light
+    // background left the ribbon invisible. Layered alpha keeps the colour.
+    rc.globalCompositeOperation = "source-over";
+    rc.globalAlpha = 1;
 
     const strokeRibbon = (rb, r) => {
       rc.beginPath();
@@ -328,10 +336,11 @@ export function renderAudioSpectrum(ctx, w, h, t, bands) {
         const y = ribbonY(rb, xt, win);
         i === 0 ? rc.moveTo(xt * w, y) : rc.lineTo(xt * w, y);
       }
-      rc.lineWidth = (4 + r * 0.8) * scale;
-      rc.strokeStyle = hsla(rb.hue, rb.sat, 58, op * 0.085); rc.stroke();
-      rc.lineWidth = 1.8 * scale;
-      rc.strokeStyle = hsla(rb.hue, rb.sat, 64, op * 0.42);  rc.stroke();
+      // soft halo, then the silky strand itself in its own shade
+      rc.lineWidth = (5 + r * 1.0) * scale;
+      rc.strokeStyle = hsla(rb.hue, rb.sat, Math.min(88, rb.lum + 14), op * 0.16); rc.stroke();
+      rc.lineWidth = 2.0 * scale;
+      rc.strokeStyle = hsla(rb.hue, rb.sat, rb.lum, op * 0.9);                     rc.stroke();
     };
     for (let r = 0; r < RN; r++) strokeRibbon(ribbons[r], r);
 
@@ -403,14 +412,18 @@ export function renderAudioSpectrum(ctx, w, h, t, bands) {
         i === 0 ? rc.moveTo(xt * w, y) : rc.lineTo(xt * w, y);
       }
     };
-    coreStroke(); rc.lineWidth = 4 * scale;   rc.strokeStyle = hsla(colorful ? 195 : bh, 40, 96, op * 0.14); rc.stroke();
-    coreStroke(); rc.lineWidth = 1.6 * scale; rc.strokeStyle = `rgba(255,255,255,${op * 0.72})`; rc.stroke();
+    // central filament — tinted with the chosen colour, only lightly whitened,
+    // so it reads as a bright highlight rather than washing the ribbon out
+    coreStroke(); rc.lineWidth = 4 * scale;
+    rc.strokeStyle = hsla(colorful ? 195 : bh, colorful ? 60 : Math.max(40, bs), 72, op * 0.20); rc.stroke();
+    coreStroke(); rc.lineWidth = 1.5 * scale;
+    rc.strokeStyle = hsla(colorful ? 195 : bh, colorful ? 45 : Math.max(30, bs - 20), 90, op * 0.55); rc.stroke();
 
-    // composite the half-res ribbon back up, still additively
-    ctx.globalCompositeOperation = "lighter";
+    // composite the half-res ribbon back up with normal alpha so the colour
+    // survives on light backgrounds (additive would vanish against white)
+    ctx.globalCompositeOperation = "source-over";
     ctx.globalAlpha = 1;
     ctx.drawImage(_ribbonCv, 0, 0, w, h);
-    ctx.globalCompositeOperation = "source-over";
   }
 
   ctx.restore();
