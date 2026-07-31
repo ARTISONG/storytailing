@@ -44,6 +44,17 @@ const GOLD_LAYERS = [
   { role:"glitter", freqKeys:["brilliance"],         depthMin:0.80, depthMax:1.00, countFrac:0.38, sizeMin:0.004, sizeMax:0.013, driftMin:0.00040, driftMax:0.00100, alphaBase:0.16, alphaFreq:0.28 },
 ];
 
+/* ── Gem layers — scattered faceted jewels in a soft jewel-toned haze ─────────
+   `role:"haze"`  = big defocused coloured bokeh, the luxurious atmosphere;
+   `role:"gem"`   = faceted brilliant-cut stones that tumble and catch light;
+   `role:"spark"` = tiny hard glints thrown off the stones on peaks.           */
+const GEM_LAYERS = [
+  { role:"haze",  freqKeys:["subBass","bass"],     depthMin:0.00, depthMax:0.26, countFrac:0.15, sizeMin:0.050, sizeMax:0.110, driftMin:0.00014, driftMax:0.00034, alphaBase:0.04, alphaFreq:0.05, rotSpeed:0.0003 },
+  { role:"gem",   freqKeys:["lowMid","mid"],       depthMin:0.26, depthMax:0.56, countFrac:0.26, sizeMin:0.016, sizeMax:0.036, driftMin:0.00022, driftMax:0.00050, alphaBase:0.30, alphaFreq:0.22, rotSpeed:0.0010 },
+  { role:"gem",   freqKeys:["highMid","presence"], depthMin:0.56, depthMax:0.84, countFrac:0.24, sizeMin:0.034, sizeMax:0.072, driftMin:0.00030, driftMax:0.00068, alphaBase:0.40, alphaFreq:0.26, rotSpeed:0.0016 },
+  { role:"spark", freqKeys:["brilliance"],         depthMin:0.84, depthMax:1.00, countFrac:0.35, sizeMin:0.003, sizeMax:0.010, driftMin:0.00038, driftMax:0.00092, alphaBase:0.14, alphaFreq:0.30, rotSpeed:0.0020 },
+];
+
 /* ── Sprite cache — built once, reused every frame ───────────────────────── */
 const SPRITE_SIZE = 256;           // px
 const _sprites = {};               // { dot, simple, crystal, flake }
@@ -346,6 +357,132 @@ function buildGoldSprites() {
   }
 }
 
+/* ── Gem sprites — brilliant-cut jewels, one baked variant per stone ──────────
+   Each stone is an octagonal outline filled with alternating light/dark facet
+   wedges (that's what reads as "cut"), a brighter table in the middle, a bright
+   girdle rim and a specular blob. Baked once; per-frame cost is a drawImage.  */
+const GEM_STONES = [
+  // [deep edge,        body,             bright core     ]
+  [[110,150,195], [186,214,240], [248,252,255]],   // diamond / white
+  [[118,  8, 34], [232, 58,  92], [255,196,206]],   // ruby
+  [[ 14, 30,110], [ 58,108,232], [196,222,255]],    // sapphire
+  [[  8, 78, 54], [ 38,196,128], [202,255,226]],    // emerald
+  [[ 70, 24,120], [158, 88,228], [232,206,255]],    // amethyst
+  [[140, 84, 10], [244,178, 58], [255,238,192]],    // topaz / gold
+  [[ 10, 94,120], [ 70,204,224], [206,250,255]],    // aquamarine
+  [[138, 24, 80], [248,110,164], [255,216,232]],    // rose
+];
+const GEM_VARIANTS = GEM_STONES.length;
+
+function buildGemSprites() {
+  if (_sprites.gem) return;
+  const S = 192, cc = S / 2, R = S * 0.44;
+  const rgb = (c, a) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+  const octa = (c, rad, rot) => {
+    c.beginPath();
+    for (let i = 0; i < 8; i++) {
+      const a = rot + (i / 8) * TAU;
+      const x = Math.cos(a) * rad, y = Math.sin(a) * rad;
+      i === 0 ? c.moveTo(x, y) : c.lineTo(x, y);
+    }
+    c.closePath();
+  };
+
+  const gems = [];
+  for (const [deep, body, core] of GEM_STONES) {
+    const oc = new OffscreenCanvas(S, S);
+    const c  = oc.getContext("2d");
+    c.translate(cc, cc);
+
+    // 1. body — radial gradient, deep at the girdle, luminous at the table
+    const g = c.createRadialGradient(0, 0, 0, 0, 0, R);
+    g.addColorStop(0,    rgb(core, 0.96));
+    g.addColorStop(0.42, rgb(body, 0.94));
+    g.addColorStop(1,    rgb(deep, 0.96));
+    octa(c, R, -Math.PI / 8); c.fillStyle = g; c.fill();
+
+    // 2. crown facets — alternating light/dark wedges from centre to girdle
+    for (let i = 0; i < 8; i++) {
+      const a0 = -Math.PI / 8 + (i / 8) * TAU;
+      const a1 = a0 + TAU / 8;
+      c.beginPath();
+      c.moveTo(0, 0);
+      c.lineTo(Math.cos(a0) * R, Math.sin(a0) * R);
+      c.lineTo(Math.cos(a1) * R, Math.sin(a1) * R);
+      c.closePath();
+      c.fillStyle = i % 2
+        ? `rgba(255,255,255,${0.10 + 0.06 * Math.cos(a0 + 0.8)})`   // lit facet
+        : rgb(deep, 0.22);                                          // shadowed facet
+      c.fill();
+    }
+
+    // 3. table — the flat top face, brightest plane
+    octa(c, R * 0.40, 0);
+    const tg = c.createLinearGradient(-R * 0.4, -R * 0.4, R * 0.4, R * 0.4);
+    tg.addColorStop(0, rgb(core, 0.92));
+    tg.addColorStop(1, rgb(body, 0.62));
+    c.fillStyle = tg; c.fill();
+    c.strokeStyle = `rgba(255,255,255,0.5)`; c.lineWidth = S * 0.006; c.stroke();
+
+    // 4. girdle rim — thin bright edge that catches the light
+    octa(c, R, -Math.PI / 8);
+    c.strokeStyle = rgb(core, 0.85); c.lineWidth = S * 0.012; c.stroke();
+
+    // 5. specular highlight — upper-left, the "expensive" glint
+    const hx = -R * 0.34, hy = -R * 0.38;
+    const hg = c.createRadialGradient(hx, hy, 0, hx, hy, R * 0.34);
+    hg.addColorStop(0,   "rgba(255,255,255,0.92)");
+    hg.addColorStop(0.5, "rgba(255,255,255,0.28)");
+    hg.addColorStop(1,   "rgba(255,255,255,0)");
+    c.fillStyle = hg;
+    c.beginPath(); c.ellipse(hx, hy, R * 0.30, R * 0.19, -Math.PI / 4, 0, TAU); c.fill();
+
+    gems.push(oc);
+  }
+  _sprites.gem = gems;
+
+  // soft jewel-toned haze disc (per stone hue) — the luxurious atmosphere
+  const hazes = [];
+  for (const [, body, core] of GEM_STONES) {
+    const H = 160, hc = H / 2;
+    const oc = new OffscreenCanvas(H, H);
+    const c  = oc.getContext("2d");
+    const g  = c.createRadialGradient(hc, hc, 0, hc, hc, H * 0.5);
+    g.addColorStop(0,    rgb(core, 0.30));
+    g.addColorStop(0.45, rgb(body, 0.26));
+    g.addColorStop(0.82, rgb(body, 0.09));
+    g.addColorStop(1,    rgb(body, 0));
+    c.fillStyle = g;
+    c.beginPath(); c.arc(hc, hc, H * 0.5, 0, TAU); c.fill();
+    hazes.push(oc);
+  }
+  _sprites.gemHaze = hazes;
+
+  // prismatic glint — long 4-point star over short 8-point rays
+  {
+    const G = 128, g0 = G / 2;
+    const oc = new OffscreenCanvas(G, G);
+    const c  = oc.getContext("2d");
+    c.translate(g0, g0);
+    c.lineCap = "round";
+    for (const [wd, alpha, len, n] of [[G*0.040, 0.22, 0.46, 4], [G*0.014, 0.95, 0.46, 4], [G*0.010, 0.42, 0.24, 8]]) {
+      c.strokeStyle = `rgba(255,252,246,${alpha})`;
+      c.lineWidth   = wd;
+      c.beginPath();
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * TAU + (n === 8 ? Math.PI / 8 : 0);
+        c.moveTo(0, 0); c.lineTo(Math.cos(a) * G * len, Math.sin(a) * G * len);
+      }
+      c.stroke();
+    }
+    const cg = c.createRadialGradient(0, 0, 0, 0, 0, G * 0.15);
+    cg.addColorStop(0, "rgba(255,255,255,0.98)");
+    cg.addColorStop(1, "rgba(255,255,255,0)");
+    c.fillStyle = cg; c.beginPath(); c.arc(0, 0, G * 0.15, 0, TAU); c.fill();
+    _sprites.gemGlint = oc;
+  }
+}
+
 /* ── Generic shape functions (non-snow) ──────────────────────────────────── */
 function drawCircle(ctx,r){ctx.beginPath();ctx.arc(0,0,r,0,TAU);}
 function drawHexagon(ctx,r){ctx.beginPath();for(let i=0;i<6;i++){const a=(i/6)*TAU-Math.PI/6;i===0?ctx.moveTo(Math.cos(a)*r,Math.sin(a)*r):ctx.lineTo(Math.cos(a)*r,Math.sin(a)*r);}ctx.closePath();}
@@ -376,8 +513,9 @@ function initParticles(w, h) {
   const isSnow = _config.shape === "snowflake";
   const isRain = _config.shape === "raindrop";
   const isGold = _config.shape === "golddust";
-  const layers = isSnow ? SNOW_LAYERS : isRain ? RAIN_LAYERS : isGold ? GOLD_LAYERS : LAYER_DEFS;
-  const total  = Math.round((isRain ? 340 : isGold ? 260 : 280) * _config.quantity);
+  const isGem  = _config.shape === "gem";
+  const layers = isSnow ? SNOW_LAYERS : isRain ? RAIN_LAYERS : isGold ? GOLD_LAYERS : isGem ? GEM_LAYERS : LAYER_DEFS;
+  const total  = Math.round((isRain ? 340 : isGold ? 260 : isGem ? 210 : 280) * _config.quantity);
   const dir    = _config.direction;
   const pts    = [];
 
@@ -387,6 +525,27 @@ function initParticles(w, h) {
     for (let i=0; i<count; i++) {
       const idx   = pts.length;
       const depth = L.depthMin + Math.random()*(L.depthMax-L.depthMin);
+
+      if (isGem) {
+        const sizeT    = Math.pow(Math.random(), 1.3);
+        const baseSize = (L.sizeMin + sizeT*(L.sizeMax-L.sizeMin)) * _config.sizeRange;
+        const drift    = L.driftMin + Math.random()*(L.driftMax-L.driftMin);
+        pts.push({
+          x: Math.random()*w, y: Math.random()*h,
+          vx0: (Math.random()-0.5)*0.00035,
+          vy0: dir==="up" ? -drift : dir==="still" ? 0 : drift,
+          baseSize, depth, layer: li, role: L.role,
+          phase:        Math.random()*TAU,
+          twinkleSpeed: 0.8 + Math.random()*2.2,
+          variant:      (idx * 3 + li) % GEM_VARIANTS,
+          noiseOff:     idx*2.71 + Math.random()*50,
+          rotAngle:     Math.random()*TAU,
+          rotSpeed:     (L.rotSpeed||0.001)*(0.4+Math.random()*1.1)*(Math.random()<0.5?1:-1),
+          tiltPhase:    Math.random()*TAU,
+          tiltSpeed:    0.5 + Math.random()*1.1,
+        });
+        continue;
+      }
 
       if (isGold) {
         const sizeT    = Math.pow(Math.random(), 1.3);
@@ -463,16 +622,18 @@ export function renderBokehSparkle(ctx, w, h, t, bands) {
   const isBubble = _config.shape==="bubble";
   const isRain   = _config.shape==="raindrop";
   const isGold   = _config.shape==="golddust";
+  const isGem    = _config.shape==="gem";
   if (isSnow)   buildSprites();        // no-op after first call
   if (isBubble) buildBubbleSprite();
   if (isRain)   buildRainSprite();
   if (isGold)   buildGoldSprites();
+  if (isGem)    buildGemSprites();
   if (_config.shape==="circle") buildDustSprites();
 
   const time   = t*0.001;
   const bass   = bands.bass||0;
   const minDim = Math.min(w,h);
-  const layers = isSnow ? SNOW_LAYERS : isRain ? RAIN_LAYERS : isGold ? GOLD_LAYERS : LAYER_DEFS;
+  const layers = isSnow ? SNOW_LAYERS : isRain ? RAIN_LAYERS : isGold ? GOLD_LAYERS : isGem ? GEM_LAYERS : LAYER_DEFS;
   const dir    = _config.direction;
 
   for (const k of Object.keys(_smoothBands))
@@ -495,6 +656,92 @@ export function renderBokehSparkle(ctx, w, h, t, bands) {
     let freq=0;
     for (const fk of L.freqKeys) freq+=(_smoothBands[fk]||0);
     freq /= L.freqKeys.length;
+
+    // ── GEMS: faceted jewels scattered through a jewel-toned haze ──
+    if (isGem) {
+      // slow luxurious drift + coherent wind
+      let dy = p.vy0*h*(1+freq*0.25);
+      let dx = p.vx0*h
+             + simplex.noise2D(p.noiseOff, time*0.045)*minDim*0.00020
+             + wind*minDim*0.0007*(0.3+p.depth);
+      if (dir==="still") dy  = simplex.noise2D(p.noiseOff+300, time*0.035)*minDim*0.00020;
+      else               dy += simplex.noise2D(p.noiseOff+200, time*0.045)*minDim*0.00014;
+      p.x += dx; p.y += dy;
+
+      const m = p.baseSize*minDim + 24;
+      if (p.y>h+m)  { p.y=-m;  p.x=Math.random()*w; }
+      if (p.y<-m)   { p.y=h+m; p.x=Math.random()*w; }
+      if (p.x>w+m)    p.x=-m;
+      if (p.x<-m)     p.x=w+m;
+
+      const breathe = 1 + Math.sin(time*0.45+p.phase)*0.06;
+      const bloom   = 1 + _beatImpulse*0.14;
+      const r = p.baseSize*minDim*breathe*bloom*(1+freq*0.10);
+      if (r<0.4) continue;
+
+      p.rotAngle += p.rotSpeed*(1+freq*0.25);
+
+      ctx.save();
+      ctx.translate(p.x, p.y);
+
+      if (p.role === "haze") {
+        // soft coloured atmosphere — additive so it glows behind the stones
+        const sprite = _sprites.gemHaze[p.variant];
+        const tw = 0.7 + 0.3*Math.sin(time*p.twinkleSpeed*0.45 + p.phase);
+        const a  = Math.min(0.8, (L.alphaBase + freq*L.alphaFreq + _beatImpulse*0.04) * _config.opacity * tw);
+        if (a >= 0.006 && sprite) {
+          const dim = r*2.2;
+          ctx.globalAlpha = a;
+          ctx.drawImage(sprite, -dim/2, -dim/2, dim, dim);
+        }
+
+      } else if (p.role === "spark") {
+        // hard prismatic glints thrown off the stones — burst on beats
+        const tw  = 0.5 + 0.5*Math.sin(time*p.twinkleSpeed*1.6 + p.phase);
+        const thr = 0.70 - _beatImpulse*0.28;
+        const a   = Math.min(0.95, (L.alphaBase + freq*L.alphaFreq + _beatImpulse*0.07) * _config.opacity * (0.3+tw));
+        if (a >= 0.01 && tw > thr && _sprites.gemGlint) {
+          const flash = (tw-thr)/(1-thr+0.001);
+          const dim   = r*(2.6 + flash*2.0);
+          ctx.globalAlpha = Math.min(0.95, a*(0.6+flash));
+          ctx.rotate(p.rotAngle*0.4);
+          ctx.drawImage(_sprites.gemGlint, -dim/2, -dim/2, dim, dim);
+        }
+
+      } else {
+        // the stones themselves — drawn opaque so the facets read as cut glass
+        const sprite = _sprites.gem[p.variant];
+        if (sprite) {
+          const a = Math.min(1, (L.alphaBase + freq*L.alphaFreq*0.5) * _config.opacity);
+          if (a >= 0.02) {
+            // coloured halo first (additive, still in screen mode)
+            const halo = _sprites.gemHaze[p.variant];
+            if (halo && p.depth > 0.4) {
+              const hd = r*2.8;
+              ctx.globalAlpha = Math.min(0.42, a*(0.22 + Math.min(0.6,_beatImpulse)*0.18));
+              ctx.drawImage(halo, -hd/2, -hd/2, hd, hd);
+            }
+            // the stone — tumbling, with a tilt that flashes the facets
+            const tilt = 0.55 + 0.45*Math.abs(Math.sin(time*p.tiltSpeed + p.tiltPhase));
+            ctx.globalCompositeOperation = "source-over";
+            ctx.rotate(p.rotAngle);
+            ctx.globalAlpha = a;
+            const dim = r*2.2;
+            ctx.drawImage(sprite, -dim/2, -dim*tilt/2, dim, dim*tilt);
+            // specular kick when a facet catches the light
+            if (tilt > 0.93 && _sprites.gemGlint) {
+              ctx.globalCompositeOperation = "lighter";
+              const gd = r*(1.7 + Math.min(0.8,_beatImpulse)*0.9);
+              ctx.globalAlpha = Math.min(0.85, a*(tilt-0.93)/0.07*0.85);
+              ctx.drawImage(_sprites.gemGlint, -gd/2, -gd/2, gd, gd);
+            }
+          }
+        }
+      }
+
+      ctx.restore();
+      continue;
+    }
 
     // ── GOLDEN DUST: soft bokeh discs + fine sparkle glitter ──
     if (isGold) {
@@ -749,5 +996,5 @@ export function resetBokehSparkle() {
   _smoothBands={subBass:0,bass:0,lowMid:0,mid:0,highMid:0,presence:0,brilliance:0,overall:0};
   _beatImpulse=0; _smoothBass=0; _prevW=0; _prevH=0;
   // clear sprite cache so they rebuild on next use
-  delete _sprites.dot; delete _sprites.simple; delete _sprites.crystal; delete _sprites.flake; delete _sprites.bubble; delete _sprites.dust; delete _sprites.glint; delete _sprites.rain; delete _sprites.goldBokeh; delete _sprites.goldSpark;
+  delete _sprites.dot; delete _sprites.simple; delete _sprites.crystal; delete _sprites.flake; delete _sprites.bubble; delete _sprites.dust; delete _sprites.glint; delete _sprites.rain; delete _sprites.goldBokeh; delete _sprites.goldSpark; delete _sprites.gem; delete _sprites.gemHaze; delete _sprites.gemGlint;
 }
