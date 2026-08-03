@@ -304,8 +304,8 @@ export function renderAudioSpectrum(ctx, w, h, t, bands) {
         // in single-colour mode the strands step deep → light, so the picked
         // colour actually reads as a dark→pale fade instead of a white glow
         lum:  colorful ? 58 : 30 + t01 * 44,
-        thick: (1.2 + wf * 7) * scale,
-        alpha: op * (0.95 - wf * 0.72),
+        thick: (0.8 + wf * 4.6) * scale,
+        alpha: op * (1.0 - wf * 0.66),
         ampR: amp * (0.55 + 0.45 * Math.sin(r * 1.27 + 1)),
         f1: 2.2 + r * 0.55, f2: 3.6 + r * 0.42,
         sp1: 0.55 + r * 0.12, sp2: 0.85 + r * 0.15,
@@ -313,11 +313,12 @@ export function renderAudioSpectrum(ctx, w, h, t, bands) {
       });
     }
 
-    /* The ribbon is all wide additive strokes spanning the full frame, which is
-       pure fill-rate — at 1080p+ it alone blew the frame budget. Draw it at half
-       resolution and upscale: 4x less fill, and the content is soft glow so the
-       upscale is invisible. */
-    const RW = Math.max(2, Math.round(w * 0.5)), RH = Math.max(2, Math.round(h * 0.5));
+    /* The ribbon is wide strokes spanning the full frame, i.e. pure fill-rate,
+       so it renders into a scratch canvas that can be downscaled when the frame
+       is large. Downscaling softens the fine strands, so only step down once the
+       frame is big enough that full-res fill would blow the budget. */
+    const rScale = Math.max(0.5, Math.min(1, 2200 / Math.max(w, h)));
+    const RW = Math.max(2, Math.round(w * rScale)), RH = Math.max(2, Math.round(h * rScale));
     if (!_ribbonCv || _ribbonCv.width !== RW || _ribbonCv.height !== RH) {
       _ribbonCv  = new OffscreenCanvas(RW, RH);
       _ribbonCtx = _ribbonCv.getContext("2d");
@@ -325,7 +326,7 @@ export function renderAudioSpectrum(ctx, w, h, t, bands) {
     const rc = _ribbonCtx;
     rc.setTransform(1, 0, 0, 1, 0, 0);
     rc.clearRect(0, 0, RW, RH);
-    rc.setTransform(0.5, 0, 0, 0.5, 0, 0);   // keep using full-res coordinates
+    rc.setTransform(rScale, 0, 0, rScale, 0, 0);   // keep using full-res coordinates
     rc.lineJoin = "round"; rc.lineCap = "round";
     // Normal alpha, not additive: additive overlap drove every strand toward
     // white (losing the chosen colour), and compositing additively onto a light
@@ -343,8 +344,8 @@ export function renderAudioSpectrum(ctx, w, h, t, bands) {
       }
       // sheer halo, then the strand at its own weight — broad strands stay
       // translucent, fine ones stay dense, which is what gives the depth
-      rc.lineWidth   = rb.thick * 2.6;
-      rc.strokeStyle = hsla(rb.hue, rb.sat, Math.min(90, rb.lum + 16), rb.alpha * 0.22);
+      rc.lineWidth   = rb.thick * 2.0;
+      rc.strokeStyle = hsla(rb.hue, rb.sat, Math.min(90, rb.lum + 16), rb.alpha * 0.16);
       rc.stroke();
       rc.lineWidth   = rb.thick;
       rc.strokeStyle = hsla(rb.hue, rb.sat, rb.lum, rb.alpha);
