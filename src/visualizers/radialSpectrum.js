@@ -1,8 +1,9 @@
 // ─── RADIAL SPECTRUM — twin rings of light that shiver like sand on a woofer ──
-//   Two concentric rings of fine radial ticks frame a centre point. Their length
-//   follows the spectrum, but the character comes from a granular jitter driven
-//   by the bass — the way sand poured onto a subwoofer skitters and jumps — plus
-//   dust blown radially outward on every kick.
+//   Two concentric rings of fine radial ticks frame a centre point. Every bit
+//   of motion — tick length, the granular jitter, the ring's breathing, the
+//   halo's pulse, the dust blown radially outward — is driven by the bass
+//   envelope alone, the way sand poured onto a subwoofer only answers to the
+//   low end, not the whole mix.
 
 const TAU = Math.PI * 2;
 
@@ -21,8 +22,6 @@ let _config = {
   opacity: 1.0,
 };
 
-const BINS = 48;
-let _bars    = null;   // smoothed magnitudes, 0..1
 let _bass    = 0;      // smoothed bass
 let _bassRef = 0;      // slow follower — the gap between them is the kick
 let _dust    = [];
@@ -33,7 +32,7 @@ let _scratch = null, _scratchCtx = null;   // used to cap fill on very large fra
 export function setRadialConfig(cfg) { Object.assign(_config, cfg); }
 export function getRadialConfig()    { return { ..._config }; }
 export function resetRadialSpectrum() {
-  _bars = null; _bass = 0; _bassRef = 0; _dust = []; _lastT = 0;
+  _bass = 0; _bassRef = 0; _dust = []; _lastT = 0;
 }
 
 /* ── colour ─────────────────────────────────────────────────────────────── */
@@ -150,30 +149,9 @@ function buildFlareSprite() {
   _flareSprite = final;
 }
 
-/* ── FFT → smoothed bins (log spaced) ───────────────────────────────────── */
-function computeBars(freq) {
-  if (!_bars) _bars = new Float32Array(BINS);
-  const n = freq.length;
-  const lo = 1, hi = Math.floor(n * 0.7), ratio = hi / lo;
-  for (let i = 0; i < BINS; i++) {
-    const f0 = Math.floor(lo * Math.pow(ratio, i / BINS));
-    const f1 = Math.max(f0 + 1, Math.floor(lo * Math.pow(ratio, (i + 1) / BINS)));
-    let s = 0, c = 0;
-    for (let b = f0; b < f1 && b < n; b++) { s += freq[b]; c++; }
-    let m = c ? (s / c) / 255 : 0;
-    m *= 0.6 + 1.0 * (i / BINS);            // lift the naturally quieter highs
-    m = Math.min(1, Math.pow(m, 0.82));
-    const cur = _bars[i];
-    _bars[i] = m > cur ? cur + (m - cur) * 0.55 : cur + (m - cur) * 0.16;
-  }
-}
-
 /* ── main render ────────────────────────────────────────────────────────── */
 export function renderRadialSpectrum(ctx, w, h, t, bands) {
-  const freq = bands && bands.frequency;
-  if (!freq) return;
-  computeBars(freq);
-  if (!_bars) return;
+  if (!bands || !bands.frequency) return;   // no analyser data yet
   buildSprite();
 
   let dt = t - _lastT; _lastT = t;
@@ -182,7 +160,8 @@ export function renderRadialSpectrum(ctx, w, h, t, bands) {
   const bass = (bands.bass || 0) * 0.6 + (bands.subBass || 0) * 0.4;
   _bass    += (bass - _bass) * 0.35;
   _bassRef += (bass - _bassRef) * 0.045;
-  const kick = Math.max(0, _bass - _bassRef);       // the thump, 0..~0.5
+  const kick    = Math.max(0, _bass - _bassRef);       // the thump, 0..~0.5
+  const bassMag = Math.min(1, Math.pow(_bass, 0.78));  // bass envelope, perceptually lifted — the single driver behind every tick's length
 
   const time     = t * 0.001;
   const op       = _config.opacity;
@@ -192,8 +171,8 @@ export function renderRadialSpectrum(ctx, w, h, t, bands) {
   const scale    = w / 1280;
 
   const cx = _config.cx * w, cy = _config.cy * h;
-  // the whole ring breathes with the music, and punches out on the kick
-  const rBase = _config.radius * minDim * (1 + (bands.overall || 0) * 0.10 + kick * 0.35);
+  // the whole ring breathes with the bass, and punches out on the kick
+  const rBase = _config.radius * minDim * (1 + _bass * 0.10 + kick * 0.35);
 
   const gapRad = (Math.min(340, Math.max(0, _config.gapDeg)) * Math.PI) / 180;
   const span   = TAU - gapRad;
@@ -236,10 +215,7 @@ export function renderRadialSpectrum(ctx, w, h, t, bands) {
     for (let i = 0; i < N; i += ring.every) {
       const p  = N > 1 ? i / (N - 1) : 0;
       const a  = start + p * span;
-      // mirror the spectrum around the top so the ring reads symmetrically
-      const d  = Math.abs(p - 0.5) * 2;
-      const bi = Math.min(BINS - 1, Math.floor(d * BINS));
-      const mag = _bars[bi];
+      const mag = bassMag;   // every tick answers to the same bass envelope
 
       // the sand: a hard, per-tick grain that only comes alive with the bass
       const gr = grain(i + ring.seed, Math.floor(time * 26)) * _bass * jit;
@@ -273,9 +249,9 @@ export function renderRadialSpectrum(ctx, w, h, t, bands) {
     buildFlareSprite();
     if (_flareSprite) {
       const hr    = rBase * _config.haloScale;
-      const pulse = 1 + (bands.overall || 0) * 0.05 + kick * 0.12;
+      const pulse = 1 + _bass * 0.05 + kick * 0.12;
       const dim   = hr * 2 * FLARE_SF * pulse * _config.haloSize;
-      const a     = Math.min(1, op * halo * (0.55 + (bands.overall || 0) * 0.30 + kick * 0.35));
+      const a     = Math.min(1, op * halo * (0.55 + _bass * 0.30 + kick * 0.35));
 
       // same hue basis the ticks use, and saturation scaled to the picked
       // colour so a near-white pick stays subtle instead of full rainbow

@@ -148,6 +148,8 @@ export default function App() {
 
   const canvasRef = useRef(null);
   const animRef = useRef(null);
+  const logoBassRef = useRef(0);      // smoothed bass envelope driving the centre-logo pulse
+  const logoBassSlowRef = useRef(0);  // its slow follower — the gap between them is the beat kick
   const audioCtxRef = useRef(null);
   const sourceRef = useRef(null);
   const mixerRef = useRef(null);
@@ -228,7 +230,16 @@ export default function App() {
   // Centre logo sits inside the radial ring, so both share the ring's centre.
   const drawCenterPiece = useCallback((c, cw, ch, elapsed, bands) => {
     if (centerLogo) {
-      const box = Math.min(cw, ch) * centerLogoSize;
+      // bass-only envelope + its slow follower (the gap between them is the beat
+      // kick) — same shape of logic the radial ring uses, kept independent here
+      // so the logo still pulses to the beat even with the ring switched off
+      const bass = (bands?.bass || 0) * 0.6 + (bands?.subBass || 0) * 0.4;
+      logoBassRef.current     += (bass - logoBassRef.current) * 0.35;
+      logoBassSlowRef.current += (bass - logoBassSlowRef.current) * 0.045;
+      const kick  = Math.max(0, logoBassRef.current - logoBassSlowRef.current);
+      const pulse = 1 + logoBassRef.current * 0.06 + kick * 0.22;
+
+      const box = Math.min(cw, ch) * centerLogoSize * pulse;
       const s = Math.min(box / centerLogo.width, box / centerLogo.height);
       const lw = centerLogo.width * s, lh = centerLogo.height * s;
       c.globalAlpha = centerLogoOpacity;
