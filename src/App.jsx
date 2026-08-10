@@ -4,6 +4,7 @@ import { detectBPM, createMixer, currentTrack } from "./utils/mixer.js";
 import { renderSongTitle } from "./visualizers/songTitle.js";
 import { renderBokehSparkle, setBokehConfig } from "./visualizers/bokehSparkle.js";
 import { renderAudioSpectrum, setSpectrumConfig } from "./visualizers/audioSpectrum.js";
+import { renderRadialSpectrum, setRadialConfig } from "./visualizers/radialSpectrum.js";
 
 /* ═══════════════════════════════════════════════════════════
    DOWNLOAD HELPER
@@ -127,6 +128,20 @@ export default function App() {
   const [spectrumHeight, setSpectrumHeight] = useState(0.20);
   const [spectrumOpacity, setSpectrumOpacity] = useState(1.0);
   const [spectrumYOffset, setSpectrumYOffset] = useState(0);
+  const [radialEnabled, setRadialEnabled] = useState(false);
+  const [radialCX, setRadialCX] = useState(0.5);
+  const [radialCY, setRadialCY] = useState(0.45);
+  const [radialRadius, setRadialRadius] = useState(0.22);
+  const [radialGapDeg, setRadialGapDeg] = useState(70);
+  const [radialTicks, setRadialTicks] = useState(110);
+  const [radialJitter, setRadialJitter] = useState(1.0);
+  const [radialDust, setRadialDust] = useState(1.0);
+  const [radialColor, setRadialColor] = useState("#ffffff");
+  const [radialColorMode, setRadialColorMode] = useState("gradient");
+  const [radialOpacity, setRadialOpacity] = useState(1.0);
+  const [centerLogo, setCenterLogo] = useState(null);
+  const [centerLogoSize, setCenterLogoSize] = useState(0.26);
+  const [centerLogoOpacity, setCenterLogoOpacity] = useState(1.0);
 
   const canvasRef = useRef(null);
   const animRef = useRef(null);
@@ -154,6 +169,12 @@ export default function App() {
   useEffect(() => {
     setSpectrumConfig({ style: spectrumStyle, colorMode: spectrumColorMode, color: spectrumColor, height: spectrumHeight, opacity: spectrumOpacity, yOffset: spectrumYOffset });
   }, [spectrumStyle, spectrumColorMode, spectrumColor, spectrumHeight, spectrumOpacity, spectrumYOffset]);
+
+  useEffect(() => {
+    setRadialConfig({ cx: radialCX, cy: radialCY, radius: radialRadius, gapDeg: radialGapDeg,
+      ticks: radialTicks, jitter: radialJitter, dust: radialDust,
+      color: radialColor, colorMode: radialColorMode, opacity: radialOpacity });
+  }, [radialCX, radialCY, radialRadius, radialGapDeg, radialTicks, radialJitter, radialDust, radialColor, radialColorMode, radialOpacity]);
 
   // YouTube chapter list — track start times across all loops
   const youtubeChapters = useMemo(() => {
@@ -200,6 +221,19 @@ export default function App() {
   }, [stopPreviewOnly]);
 
   // Get background image (+ transition state) for given playhead position.
+  // Centre logo sits inside the radial ring, so both share the ring's centre.
+  const drawCenterPiece = useCallback((c, cw, ch, elapsed, bands) => {
+    if (centerLogo) {
+      const box = Math.min(cw, ch) * centerLogoSize;
+      const s = Math.min(box / centerLogo.width, box / centerLogo.height);
+      const lw = centerLogo.width * s, lh = centerLogo.height * s;
+      c.globalAlpha = centerLogoOpacity;
+      c.drawImage(centerLogo, radialCX * cw - lw / 2, radialCY * ch - lh / 2, lw, lh);
+      c.globalAlpha = 1;
+    }
+    if (radialEnabled) renderRadialSpectrum(c, cw, ch, elapsed, bands);
+  }, [centerLogo, centerLogoSize, centerLogoOpacity, radialCX, radialCY, radialEnabled]);
+
   // Returns { img, prevImg, prog } — prog in [0,1) while transitioning.
   const getBgForPlayhead = useCallback((mixer, playhead) => {
     const t = tracksRef.current;
@@ -274,6 +308,9 @@ export default function App() {
       // Bokeh
       if (bokehEnabled) renderBokehSparkle(ctx, cw, ch, elapsed, bands);
 
+      // Centre logo + radial ring
+      drawCenterPiece(ctx, cw, ch, elapsed, bands);
+
       // Audio equalizer spectrum (bottom of frame)
       if (spectrumEnabled) renderAudioSpectrum(ctx, cw, ch, elapsed, bands);
 
@@ -288,7 +325,7 @@ export default function App() {
       fc++; animRef.current = requestAnimationFrame(loop);
     };
     animRef.current = requestAnimationFrame(loop); setPlaying(true);
-  }, [resolution, tracks, crossfadeSec, titleMode, audioName, songTitle, songTitle2, showTitle, titlePos, titleFontSize, titleFontSize2, bokehEnabled, spectrumEnabled, bgTransition, getBgForPlayhead, stopAll]);
+  }, [resolution, tracks, crossfadeSec, titleMode, audioName, songTitle, songTitle2, showTitle, titlePos, titleFontSize, titleFontSize2, bokehEnabled, spectrumEnabled, drawCenterPiece, bgTransition, getBgForPlayhead, stopAll]);
 
   const handleFiles = useCallback(async (fileList) => {
     const files = Array.from(fileList || []).filter(f =>
@@ -412,6 +449,7 @@ export default function App() {
           else drawBg(octx, cw, ch, bg.img);
 
           if (bokehEnabled) renderBokehSparkle(octx, cw, ch, elapsed, bands);
+          drawCenterPiece(octx, cw, ch, elapsed, bands);
           if (spectrumEnabled) renderAudioSpectrum(octx, cw, ch, elapsed, bands);
 
           let expLine1 = songTitle || audioName;
@@ -465,7 +503,7 @@ export default function App() {
     } finally {
       setExporting(false); exportTimerRef.current = null;
     }
-  }, [loops, resolution, tracks, crossfadeSec, titleMode, audioName, songTitle, songTitle2, showTitle, titlePos, titleFontSize, titleFontSize2, bokehEnabled, spectrumEnabled, bgTransition, endLogo, getBgForPlayhead, stopPreviewOnly]);
+  }, [loops, resolution, tracks, crossfadeSec, titleMode, audioName, songTitle, songTitle2, showTitle, titlePos, titleFontSize, titleFontSize2, bokehEnabled, spectrumEnabled, drawCenterPiece, bgTransition, endLogo, getBgForPlayhead, stopPreviewOnly]);
 
   useEffect(() => () => stopAll(), [stopAll]);
 
@@ -885,6 +923,130 @@ export default function App() {
                     <input type="range" min={20} max={100} value={Math.round(spectrumOpacity * 100)}
                       onChange={e => setSpectrumOpacity(Number(e.target.value) / 100)}
                       style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Radial Spectrum + Centre Logo */}
+            <div style={{ marginTop: 16, background: "rgba(8,6,4,0.6)", border: "1px solid #1A1814", borderRadius: 10, padding: "16px 18px" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div onClick={() => setRadialEnabled(!radialEnabled)} style={{ width: 18, height: 18, borderRadius: 3, border: "1px solid " + (radialEnabled ? gold(0.5) : "#1E1C18"), display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", background: radialEnabled ? "rgba(212,175,55,0.1)" : "transparent", fontSize: 13, color: gold(0.7) }}>{radialEnabled ? "✓" : ""}</div>
+                  <span style={{ fontSize: 15, color: gold(0.6), fontFamily: "'Sarabun'", fontWeight: 300, letterSpacing: 1 }}>Radial Spectrum & Logo</span>
+                </div>
+                <span style={{ fontSize: 12, color: "#5A5448", fontFamily: "'Sarabun'", fontWeight: 200 }}>วงแหวนสั่นตามเบส + โลโก้กลางจอ</span>
+              </div>
+
+              {/* Centre logo — usable on its own, so it sits outside the enable gate */}
+              <div style={{ marginBottom: radialEnabled ? 16 : 0, paddingBottom: radialEnabled ? 14 : 0, borderBottom: radialEnabled ? "1px solid #141210" : "none" }}>
+                <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 8 }}>โลโก้กลางจอ (แสดงตลอดเพลง — ไม่บังคับ)</label>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                  <button onClick={() => { const inp = document.createElement("input"); inp.type = "file"; inp.accept = "image/*"; inp.onchange = e => { const f = e.target.files[0]; if (!f || !f.type.startsWith("image/")) return; const img = new Image(); img.onload = () => setCenterLogo(img); img.src = URL.createObjectURL(f); }; inp.click(); }}
+                    style={{ background: "rgba(8,6,4,0.8)", border: "1px solid #1E1C18", color: "#9A948C", padding: "7px 16px", borderRadius: 6, fontSize: 13, fontFamily: "'Sarabun'", cursor: "pointer" }}>
+                    {centerLogo ? "เปลี่ยนโลโก้" : "เลือกไฟล์รูป"}
+                  </button>
+                  {centerLogo && (
+                    <>
+                      <img src={centerLogo.src} alt="center logo" style={{ height: 30, borderRadius: 4, border: "1px solid #1E1C18" }} />
+                      <button onClick={() => setCenterLogo(null)} style={{ background: "none", border: "none", color: "#6A6050", cursor: "pointer", fontSize: 13 }}>✕</button>
+                    </>
+                  )}
+                </div>
+                {centerLogo && (
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 10 }}>
+                    <div>
+                      <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6 }}>ขนาดโลโก้ ({Math.round(centerLogoSize * 100)}%)</label>
+                      <input type="range" min={5} max={70} value={Math.round(centerLogoSize * 100)}
+                        onChange={e => setCenterLogoSize(Number(e.target.value) / 100)}
+                        style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6 }}>ความเข้มโลโก้ ({Math.round(centerLogoOpacity * 100)}%)</label>
+                      <input type="range" min={10} max={100} value={Math.round(centerLogoOpacity * 100)}
+                        onChange={e => setCenterLogoOpacity(Number(e.target.value) / 100)}
+                        style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {radialEnabled && (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                  <div>
+                    <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6 }}>
+                      ตำแหน่งแนวนอน X ({Math.round(radialCX * 100)}%)
+                    </label>
+                    <input type="range" min={0} max={100} value={Math.round(radialCX * 100)}
+                      onChange={e => setRadialCX(Number(e.target.value) / 100)}
+                      style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
+
+                    <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>
+                      ตำแหน่งแนวตั้ง Y ({Math.round(radialCY * 100)}%)
+                    </label>
+                    <input type="range" min={0} max={100} value={Math.round(radialCY * 100)}
+                      onChange={e => setRadialCY(Number(e.target.value) / 100)}
+                      style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
+
+                    <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>
+                      รัศมีวง ({Math.round(radialRadius * 100)}%)
+                    </label>
+                    <input type="range" min={5} max={60} value={Math.round(radialRadius * 100)}
+                      onChange={e => setRadialRadius(Number(e.target.value) / 100)}
+                      style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
+
+                    <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>
+                      ช่องเปิดด้านล่าง ({radialGapDeg}°)
+                    </label>
+                    <input type="range" min={0} max={200} value={radialGapDeg}
+                      onChange={e => setRadialGapDeg(Number(e.target.value))}
+                      style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
+                  </div>
+
+                  <div>
+                    <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6 }}>
+                      จำนวนเส้น ({radialTicks})
+                    </label>
+                    <input type="range" min={30} max={240} value={radialTicks}
+                      onChange={e => setRadialTicks(Number(e.target.value))}
+                      style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
+
+                    <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>
+                      ความแรงสั่น ({Math.round(radialJitter * 100)}%)
+                    </label>
+                    <input type="range" min={0} max={250} value={Math.round(radialJitter * 100)}
+                      onChange={e => setRadialJitter(Number(e.target.value) / 100)}
+                      style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
+
+                    <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>
+                      ปริมาณฝุ่น ({Math.round(radialDust * 100)}%)
+                    </label>
+                    <input type="range" min={0} max={250} value={Math.round(radialDust * 100)}
+                      onChange={e => setRadialDust(Number(e.target.value) / 100)}
+                      style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
+
+                    <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>
+                      ความเข้ม ({Math.round(radialOpacity * 100)}%)
+                    </label>
+                    <input type="range" min={10} max={100} value={Math.round(radialOpacity * 100)}
+                      onChange={e => setRadialOpacity(Number(e.target.value) / 100)}
+                      style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
+
+                    <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>สี</label>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <input type="color" value={radialColor} onChange={e => { setRadialColorMode("gradient"); setRadialColor(e.target.value); }}
+                        style={{ width: 40, height: 26, borderRadius: 6, border: "1px solid #1E1C18", background: "transparent", cursor: "pointer", opacity: radialColorMode === "colorful" ? 0.4 : 1 }} />
+                      {["#ffffff", "#ffd98a", "#3fa9ff", "#37e0c8", "#ff4a9d"].map(c => (
+                        <div key={c} onClick={() => { setRadialColorMode("gradient"); setRadialColor(c); }}
+                          style={{ width: 18, height: 18, borderRadius: 4, background: c, cursor: "pointer", border: radialColorMode === "gradient" && radialColor === c ? "2px solid #fff" : "1px solid #00000060" }} />
+                      ))}
+                      <button onClick={() => setRadialColorMode(radialColorMode === "colorful" ? "gradient" : "colorful")} style={{
+                        padding: "4px 10px", borderRadius: 6, fontSize: 12, fontFamily: "'Sarabun'", cursor: "pointer",
+                        border: radialColorMode === "colorful" ? "1px solid " + gold(0.5) : "1px solid #1E1C18",
+                        background: radialColorMode === "colorful" ? "rgba(212,175,55,0.08)" : "rgba(8,6,4,0.8)",
+                        color: radialColorMode === "colorful" ? gold(0.8) : "#5A5448",
+                      }}>หลากสี</button>
+                    </div>
                   </div>
                 </div>
               )}
