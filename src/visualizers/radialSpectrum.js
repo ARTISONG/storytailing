@@ -15,6 +15,7 @@ let _config = {
   dust: 1.0,             // dust emission
   halo: 0.8,             // faint outer halo loop (0 = off)
   haloScale: 1.9,        // its radius, as a multiple of the ring radius
+  haloSize: 1.0,         // its own visual size, independent of that radius
   color: "#ffffff",
   colorMode: "gradient", // "gradient" (single hue) | "colorful" (hue around the ring)
   opacity: 1.0,
@@ -75,21 +76,26 @@ function buildSprite() {
   _sprite = oc;
 }
 
-/* ── lens-flare halo ring — baked once per colour, then just a drawImage ────
+/* ── lens-flare halo ring — baked once ever, then just a drawImage ──────────
    A real lens-flare halo is dispersed light through glass: a torus-shaped
    band with a chromatic (rainbow-fringed) sweep and one bright specular hot
-   spot, not an outline and not a wave. Baked at a fixed radius fraction
-   (ring mid-band sits at 0.60 of the sprite's half-size — see FLARE_SF) so
-   the caller only needs one multiply to know the draw size for a given
-   target radius. */
+   spot, not an outline and not a wave. It's baked ONCE at a neutral reference
+   hue (0°) with a narrow dispersion wobble — like the ticks it surrounds, the
+   flare shows one dominant colour at a time, not a full rainbow — and then
+   recoloured per frame with hue-rotate/saturate filters to exactly track
+   whatever colour the ticks are currently showing (static picked hue, or the
+   same slowly-rotating hue in "colorful" mode). That also means picking a new
+   colour or switching modes needs no rebake, just a different filter string.
+   Ring mid-band sits at 0.60 of the sprite's half-size — see FLARE_SF — so
+   the caller only needs one multiply to know the draw size for a target
+   radius. */
 const FLARE_MID_FRAC = 0.60;
 const FLARE_SF = 1 / FLARE_MID_FRAC;      // draw diameter = hr * 2 * FLARE_SF
-let _flareSprite = null, _flareKey = null;
+const FLARE_BASE_SAT = 80;                // saturation baked into the sprite; filters scale from this
+let _flareSprite = null;
 
-function buildFlareSprite(colorful, hue, sat) {
-  const key = colorful ? "colorful" : `${hue}:${sat}`;
-  if (_flareKey === key) return;
-  _flareKey = key;
+function buildFlareSprite() {
+  if (_flareSprite) return;
 
   const S = 512, c = S / 2;
   const glintFrac = 0.14;                 // where the "sun hits the glass"
@@ -103,11 +109,9 @@ function buildFlareSprite(colorful, hue, sat) {
   for (let i = 0; i <= STOPS; i++) {
     const frac = i / STOPS;
     const boost = Math.exp(-(circDist(frac, glintFrac) ** 2) / (2 * 0.05 * 0.05));
-    const h = colorful
-      ? (frac * 360) % 360
-      : hue + Math.sin(frac * TAU * 2) * 16;                    // gentle dispersion wobble
-    const s = Math.max(20, (colorful ? 80 : sat) * (1 - boost * 0.75));
-    const l = 52 + boost * 44;                                   // whites-out at the glint
+    const h = (Math.sin(frac * TAU * 2) * 16 + 360) % 360;         // gentle dispersion wobble around 0°
+    const s = Math.max(20, FLARE_BASE_SAT * (1 - boost * 0.75));
+    const l = 52 + boost * 44;                                     // whites-out at the glint
     conic.addColorStop(frac, hsla(Math.round(h), Math.round(s), Math.round(l), 1));
   }
   rc.fillStyle = conic;
@@ -129,15 +133,13 @@ function buildFlareSprite(colorful, hue, sat) {
   rc.globalCompositeOperation = "source-over";
 
   // final sprite: soften the ring with a blur pass, plus a faint ambient wash
-  // behind it so the flare bleeds into the scene a little
+  // behind it so the flare bleeds into the scene a little. The wash carries a
+  // reference hue too (not plain white) so the same hue-rotate filter tints it.
   const final = new OffscreenCanvas(S, S);
   const fc = final.getContext("2d");
-  // fades back to transparent at the sprite edge — a gradient stop at offset 1
-  // clamps to that colour for anything beyond it, which was leaking a faint
-  // square wash into the corners once drawn
   const amb = fc.createRadialGradient(c, c, S * 0.20, c, c, S * 0.5);
   amb.addColorStop(0,    "rgba(255,255,255,0)");
-  amb.addColorStop(0.6,  colorful ? "rgba(180,200,255,0.06)" : hsla(hue, sat, 75, 0.07));
+  amb.addColorStop(0.6,  hsla(0, 55, 78, 0.06));
   amb.addColorStop(1,    "rgba(255,255,255,0)");
   fc.fillStyle = amb;
   fc.beginPath(); fc.arc(c, c, S * 0.5, 0, TAU); fc.fill();
@@ -259,21 +261,41 @@ export function renderRadialSpectrum(ctx, w, h, t, bands) {
   }
 
   /* ── halo: a lens-flare ring — dispersed light, not a wave or an outline ──
-     Baked once per colour (see buildFlareSprite); per frame it's just a
-     drawImage, sized so the ring's bright band lands at hr, with a gentle
-     size/brightness pulse tied to the music instead of any organic ripple —
-     real flares don't wobble, they flare up in intensity.                    */
+     Baked once ever (see buildFlareSprite); per frame it's a drawImage with a
+     hue-rotate/saturate filter so its colour exactly tracks the ticks (same
+     static hue, or the same slowly-rotating hue in "colorful" mode), clipped
+     to the same angular opening so it doesn't spill into the gap, sized by
+     haloScale (its distance) and haloSize (its own size) independently, with
+     a gentle size/brightness pulse tied to the music instead of any organic
+     ripple — real flares don't wobble, they flare up in intensity.           */
   const halo = _config.halo;
   if (halo > 0.01) {
-    buildFlareSprite(colorful, bh, bs);
+    buildFlareSprite();
     if (_flareSprite) {
-      const hr   = rBase * _config.haloScale;
+      const hr    = rBase * _config.haloScale;
       const pulse = 1 + (bands.overall || 0) * 0.05 + kick * 0.12;
-      const dim   = hr * 2 * FLARE_SF * pulse;
+      const dim   = hr * 2 * FLARE_SF * pulse * _config.haloSize;
       const a     = Math.min(1, op * halo * (0.55 + (bands.overall || 0) * 0.30 + kick * 0.35));
+
+      // same hue basis the ticks use, and saturation scaled to the picked
+      // colour so a near-white pick stays subtle instead of full rainbow
+      const hueDeg = colorful ? (time * 20) % 360 : bh;
+      const satPct = Math.max(25, Math.min(160, Math.round(((colorful ? 80 : bs) / FLARE_BASE_SAT) * 100)));
+
+      ctx.save();
+      // clip to the tick rings' opening so the flare doesn't spill into the gap
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, Math.max(w, h) * 2, start, start + span);
+      ctx.closePath();
+      ctx.clip();
+
+      ctx.filter = `hue-rotate(${hueDeg.toFixed(1)}deg) saturate(${satPct}%)`;
       ctx.globalAlpha = a;
       ctx.drawImage(_flareSprite, cx - dim / 2, cy - dim / 2, dim, dim);
+      ctx.filter = "none";
       ctx.globalAlpha = 1;
+      ctx.restore();
     }
   }
 
