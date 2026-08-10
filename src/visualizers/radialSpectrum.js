@@ -75,6 +75,79 @@ function buildSprite() {
   _sprite = oc;
 }
 
+/* ── lens-flare halo ring — baked once per colour, then just a drawImage ────
+   A real lens-flare halo is dispersed light through glass: a torus-shaped
+   band with a chromatic (rainbow-fringed) sweep and one bright specular hot
+   spot, not an outline and not a wave. Baked at a fixed radius fraction
+   (ring mid-band sits at 0.60 of the sprite's half-size — see FLARE_SF) so
+   the caller only needs one multiply to know the draw size for a given
+   target radius. */
+const FLARE_MID_FRAC = 0.60;
+const FLARE_SF = 1 / FLARE_MID_FRAC;      // draw diameter = hr * 2 * FLARE_SF
+let _flareSprite = null, _flareKey = null;
+
+function buildFlareSprite(colorful, hue, sat) {
+  const key = colorful ? "colorful" : `${hue}:${sat}`;
+  if (_flareKey === key) return;
+  _flareKey = key;
+
+  const S = 512, c = S / 2;
+  const glintFrac = 0.14;                 // where the "sun hits the glass"
+  const circDist = (a, b) => { let d = Math.abs(a - b) % 1; return d > 0.5 ? 1 - d : d; };
+
+  // ring layer: conic hue sweep + specular hot spot, opaque (alpha shaped later)
+  const ring = new OffscreenCanvas(S, S);
+  const rc = ring.getContext("2d");
+  const conic = rc.createConicGradient(-Math.PI / 2, c, c);
+  const STOPS = 48;
+  for (let i = 0; i <= STOPS; i++) {
+    const frac = i / STOPS;
+    const boost = Math.exp(-(circDist(frac, glintFrac) ** 2) / (2 * 0.05 * 0.05));
+    const h = colorful
+      ? (frac * 360) % 360
+      : hue + Math.sin(frac * TAU * 2) * 16;                    // gentle dispersion wobble
+    const s = Math.max(20, (colorful ? 80 : sat) * (1 - boost * 0.75));
+    const l = 52 + boost * 44;                                   // whites-out at the glint
+    conic.addColorStop(frac, hsla(Math.round(h), Math.round(s), Math.round(l), 1));
+  }
+  rc.fillStyle = conic;
+  rc.fillRect(0, 0, S, S);
+
+  // shape it into a torus — soft single peak at FLARE_MID_FRAC, transparent at
+  // the centre and the far edge
+  const mask = rc.createRadialGradient(c, c, 0, c, c, c);
+  mask.addColorStop(0.00, "rgba(0,0,0,0)");
+  mask.addColorStop(0.42, "rgba(0,0,0,0)");
+  mask.addColorStop(0.50, "rgba(0,0,0,0.55)");
+  mask.addColorStop(FLARE_MID_FRAC, "rgba(0,0,0,1)");
+  mask.addColorStop(0.70, "rgba(0,0,0,0.55)");
+  mask.addColorStop(0.80, "rgba(0,0,0,0)");
+  mask.addColorStop(1.00, "rgba(0,0,0,0)");
+  rc.globalCompositeOperation = "destination-in";
+  rc.fillStyle = mask;
+  rc.fillRect(0, 0, S, S);
+  rc.globalCompositeOperation = "source-over";
+
+  // final sprite: soften the ring with a blur pass, plus a faint ambient wash
+  // behind it so the flare bleeds into the scene a little
+  const final = new OffscreenCanvas(S, S);
+  const fc = final.getContext("2d");
+  // fades back to transparent at the sprite edge — a gradient stop at offset 1
+  // clamps to that colour for anything beyond it, which was leaking a faint
+  // square wash into the corners once drawn
+  const amb = fc.createRadialGradient(c, c, S * 0.20, c, c, S * 0.5);
+  amb.addColorStop(0,    "rgba(255,255,255,0)");
+  amb.addColorStop(0.6,  colorful ? "rgba(180,200,255,0.06)" : hsla(hue, sat, 75, 0.07));
+  amb.addColorStop(1,    "rgba(255,255,255,0)");
+  fc.fillStyle = amb;
+  fc.beginPath(); fc.arc(c, c, S * 0.5, 0, TAU); fc.fill();
+  fc.filter = "blur(3px)";
+  fc.drawImage(ring, 0, 0);
+  fc.filter = "none";
+
+  _flareSprite = final;
+}
+
 /* ── FFT → smoothed bins (log spaced) ───────────────────────────────────── */
 function computeBars(freq) {
   if (!_bars) _bars = new Float32Array(BINS);
@@ -185,57 +258,23 @@ export function renderRadialSpectrum(ctx, w, h, t, bands) {
     ctx.stroke();
   }
 
-  /* ── halo: a soft corona of fine rays, not an outline ──
-     A hard stroke reads as a drawn circle; what we want is diffuse light. So
-     it's a transparent-edged glow band with a comb of faint radial rays inside
-     it, both undulating on slow harmonics — soft, gelatinous, bokeh-like.     */
+  /* ── halo: a lens-flare ring — dispersed light, not a wave or an outline ──
+     Baked once per colour (see buildFlareSprite); per frame it's just a
+     drawImage, sized so the ring's bright band lands at hr, with a gentle
+     size/brightness pulse tied to the music instead of any organic ripple —
+     real flares don't wobble, they flare up in intensity.                    */
   const halo = _config.halo;
   if (halo > 0.01) {
-    const hr   = rBase * _config.haloScale;
-    const hHue = colorful ? (time * 20 + 200) % 360 : bh;
-    const hSat = colorful ? 65 : bs;
-    const amp  = 0.020 + (bands.overall || 0) * 0.038 + kick * 0.055;
-    const wob  = (a) => Math.sin(a * 5 + time * 0.70) * 0.50
-                      + Math.sin(a * 8 - time * 0.45) * 0.30
-                      + Math.sin(a * 3 + time * 0.25) * 0.20;
-
-    // 1. the jelly — an annulus of light that fades out on both edges
-    const gr = ctx.createRadialGradient(cx, cy, hr * 0.62, cx, cy, hr * 1.34);
-    gr.addColorStop(0,    hsla(hHue, hSat, 80, 0));
-    gr.addColorStop(0.35, hsla(hHue, hSat, 82, op * halo * 0.075));
-    gr.addColorStop(0.55, hsla(hHue, hSat, 88, op * halo * 0.10));
-    gr.addColorStop(0.78, hsla(hHue, hSat, 82, op * halo * 0.05));
-    gr.addColorStop(1,    hsla(hHue, hSat, 80, 0));
-    ctx.fillStyle = gr;
-    // fill the annulus only — the middle is transparent anyway, and skipping it
-    // keeps a large fill off the centre of the frame
-    ctx.beginPath();
-    ctx.arc(cx, cy, hr * 1.34, 0, TAU);
-    ctx.arc(cx, cy, hr * 0.62, 0, TAU, true);
-    ctx.fill();
-
-    // 2. the rays — a fine comb riding the same wobble, dense enough that the
-    //    individual strokes dissolve into a feathered band
-    const HN = 220;
-    ctx.beginPath();
-    for (let i = 0; i < HN; i++) {
-      const a  = (i / HN) * TAU - Math.PI / 2;
-      const wv = wob(a);
-      const mid = hr * (1 + wv * amp);
-      // rays breathe with the same wave, so the band feels alive rather than flat
-      const lenF = 0.055 + 0.075 * (0.5 + wv * 0.5) + _bass * 0.05;
-      const half = hr * lenF * 0.5;
-      const ca = Math.cos(a), sa = Math.sin(a);
-      ctx.moveTo(cx + ca * (mid - half), cy + sa * (mid - half));
-      ctx.lineTo(cx + ca * (mid + half), cy + sa * (mid + half));
+    buildFlareSprite(colorful, bh, bs);
+    if (_flareSprite) {
+      const hr   = rBase * _config.haloScale;
+      const pulse = 1 + (bands.overall || 0) * 0.05 + kick * 0.12;
+      const dim   = hr * 2 * FLARE_SF * pulse;
+      const a     = Math.min(1, op * halo * (0.55 + (bands.overall || 0) * 0.30 + kick * 0.35));
+      ctx.globalAlpha = a;
+      ctx.drawImage(_flareSprite, cx - dim / 2, cy - dim / 2, dim, dim);
+      ctx.globalAlpha = 1;
     }
-    ctx.lineWidth   = 1.1 * scale;
-    ctx.strokeStyle = hsla(hHue, hSat, 88, op * halo * 0.16);
-    ctx.stroke();
-    // a second, shorter pass concentrates brightness at the core of the band
-    ctx.lineWidth   = 0.8 * scale;
-    ctx.strokeStyle = hsla(hHue, Math.max(0, hSat - 15), 95, op * halo * 0.10);
-    ctx.stroke();
   }
 
   /* ── dust blown off the ring on every kick ── */
