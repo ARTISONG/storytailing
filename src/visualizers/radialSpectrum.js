@@ -75,30 +75,33 @@ function buildSprite() {
   _sprite = oc;
 }
 
-/* ── lens-flare halo ring — baked once ever, then just a drawImage ──────────
-   A real lens-flare halo is dispersed light through glass: a torus-shaped
-   band with a chromatic (rainbow-fringed) sweep and one bright specular hot
-   spot, not an outline and not a wave. It's baked ONCE at a neutral reference
-   hue (0°) with a narrow dispersion wobble — like the ticks it surrounds, the
-   flare shows one dominant colour at a time, not a full rainbow — and then
-   recoloured per frame with hue-rotate/saturate filters to exactly track
-   whatever colour the ticks are currently showing (static picked hue, or the
-   same slowly-rotating hue in "colorful" mode). That also means picking a new
-   colour or switching modes needs no rebake, just a different filter string.
+/* ── lens-flare halo ring — baked with the exact tick colour, then a drawImage
+   A real lens-flare halo is dispersed light through glass: a soft torus-shaped
+   glow with a chromatic (rainbow-fringed) sweep and one bright specular hot
+   spot — diffuse, not a drawn ring with a hard edge. It's baked directly with
+   the SAME hue/saturation math the ticks use (hsla(hue, sat, ...)), so the
+   colour matches exactly — no CSS hue-rotate() approximation, which drifts
+   the perceived hue away from the ticks' actual colour, especially at large
+   rotations. Re-baked only when the target hue/sat actually changes by a
+   meaningful amount (cheap in "gradient" mode — the user rarely touches the
+   colour picker; in "colorful" mode the hue keeps drifting, so it re-bakes a
+   few times a second, still far cheaper than every frame).
    Ring mid-band sits at 0.60 of the sprite's half-size — see FLARE_SF — so
    the caller only needs one multiply to know the draw size for a target
    radius. */
 const FLARE_MID_FRAC = 0.60;
 const FLARE_SF = 1 / FLARE_MID_FRAC;      // draw diameter = hr * 2 * FLARE_SF
-const FLARE_BASE_SAT = 80;                // saturation baked into the sprite; filters scale from this
-let _flareSprite = null;
+let _flareSprite = null, _flareKey = null;
 
-function buildFlareSprite() {
-  if (_flareSprite) return;
+function buildFlareSprite(hue, sat) {
+  const key = `${Math.round(hue / 3)}:${Math.round(sat)}`;
+  if (_flareKey === key) return;
+  _flareKey = key;
 
   const S = 512, c = S / 2;
   const glintFrac = 0.14;                 // where the "sun hits the glass"
   const circDist = (a, b) => { let d = Math.abs(a - b) % 1; return d > 0.5 ? 1 - d : d; };
+  const baseSat = Math.max(30, sat);      // real dispersion still shows some colour even for a near-white pick
 
   // ring layer: conic hue sweep + specular hot spot, opaque (alpha shaped later)
   const ring = new OffscreenCanvas(S, S);
@@ -108,41 +111,40 @@ function buildFlareSprite() {
   for (let i = 0; i <= STOPS; i++) {
     const frac = i / STOPS;
     const boost = Math.exp(-(circDist(frac, glintFrac) ** 2) / (2 * 0.05 * 0.05));
-    const h = (Math.sin(frac * TAU * 2) * 16 + 360) % 360;         // gentle dispersion wobble around 0°
-    const s = Math.max(20, FLARE_BASE_SAT * (1 - boost * 0.75));
-    const l = 52 + boost * 44;                                     // whites-out at the glint
+    const h = (hue + Math.sin(frac * TAU * 2) * 14 + 360) % 360;   // gentle dispersion wobble around the real hue
+    const s = Math.max(18, baseSat * (1 - boost * 0.75));
+    const l = 50 + boost * 46;                                     // whites-out at the glint
     conic.addColorStop(frac, hsla(Math.round(h), Math.round(s), Math.round(l), 1));
   }
   rc.fillStyle = conic;
   rc.fillRect(0, 0, S, S);
 
-  // shape it into a torus — soft single peak at FLARE_MID_FRAC, transparent at
-  // the centre and the far edge
+  // shape it into a torus — wide, gradual fade on both sides (no plateau), so
+  // it reads as diffuse light instead of a ring with an edge
   const mask = rc.createRadialGradient(c, c, 0, c, c, c);
   mask.addColorStop(0.00, "rgba(0,0,0,0)");
-  mask.addColorStop(0.42, "rgba(0,0,0,0)");
-  mask.addColorStop(0.50, "rgba(0,0,0,0.55)");
+  mask.addColorStop(0.28, "rgba(0,0,0,0)");
   mask.addColorStop(FLARE_MID_FRAC, "rgba(0,0,0,1)");
-  mask.addColorStop(0.70, "rgba(0,0,0,0.55)");
-  mask.addColorStop(0.80, "rgba(0,0,0,0)");
+  mask.addColorStop(0.92, "rgba(0,0,0,0)");
   mask.addColorStop(1.00, "rgba(0,0,0,0)");
   rc.globalCompositeOperation = "destination-in";
   rc.fillStyle = mask;
   rc.fillRect(0, 0, S, S);
   rc.globalCompositeOperation = "source-over";
 
-  // final sprite: soften the ring with a blur pass, plus a faint ambient wash
-  // behind it so the flare bleeds into the scene a little. The wash carries a
-  // reference hue too (not plain white) so the same hue-rotate filter tints it.
+  // final sprite: a much stronger blur than before — the previous 3px was
+  // baked at 512px and barely registered once scaled up to the ring's actual
+  // on-screen size, which is what made it read as a hard-edged blob instead
+  // of soft glass. Plus a faint ambient wash tinted to the same real hue.
   const final = new OffscreenCanvas(S, S);
   const fc = final.getContext("2d");
-  const amb = fc.createRadialGradient(c, c, S * 0.20, c, c, S * 0.5);
+  const amb = fc.createRadialGradient(c, c, S * 0.16, c, c, S * 0.52);
   amb.addColorStop(0,    "rgba(255,255,255,0)");
-  amb.addColorStop(0.6,  hsla(0, 55, 78, 0.06));
+  amb.addColorStop(0.6,  hsla(Math.round(hue), Math.max(20, baseSat * 0.6), 78, 0.05));
   amb.addColorStop(1,    "rgba(255,255,255,0)");
   fc.fillStyle = amb;
   fc.beginPath(); fc.arc(c, c, S * 0.5, 0, TAU); fc.fill();
-  fc.filter = "blur(3px)";
+  fc.filter = "blur(16px)";
   fc.drawImage(ring, 0, 0);
   fc.filter = "none";
 
@@ -237,26 +239,23 @@ export function renderRadialSpectrum(ctx, w, h, t, bands) {
   }
 
   /* ── halo: a lens-flare ring — dispersed light, not a wave or an outline ──
-     Baked once ever (see buildFlareSprite); per frame it's a drawImage with a
-     hue-rotate/saturate filter so its colour exactly tracks the ticks (same
-     static hue, or the same slowly-rotating hue in "colorful" mode), clipped
-     to the same angular opening so it doesn't spill into the gap, sized by
-     haloScale (its distance) and haloSize (its own size) independently, with
-     a gentle size/brightness pulse tied to the music instead of any organic
-     ripple — real flares don't wobble, they flare up in intensity.           */
+     Rebaked (see buildFlareSprite) whenever the tick colour actually changes;
+     per frame it's just a drawImage, clipped to the same angular opening so
+     it doesn't spill into the gap, sized by haloScale (its distance) and
+     haloSize (its own size) independently. It fades close to invisible at
+     rest and swells clearly with the bass and on the kick — a genuine pulse
+     rather than a constant-on wash.                                          */
   const halo = _config.halo;
   if (halo > 0.01) {
-    buildFlareSprite();
+    // same hue/saturation basis the ticks use — baked directly, no filter
+    const hueDeg = colorful ? (time * 20) % 360 : bh;
+    const satAct = colorful ? 80 : bs;
+    buildFlareSprite(hueDeg, satAct);
     if (_flareSprite) {
       const hr    = rBase * _config.haloScale;
-      const pulse = 1 + _bass * 0.05 + kick * 0.12;
+      const pulse = 1 + _bass * 0.06 + kick * 0.14;
       const dim   = hr * 2 * FLARE_SF * pulse * _config.haloSize;
-      const a     = Math.min(1, op * halo * (0.55 + _bass * 0.30 + kick * 0.35));
-
-      // same hue basis the ticks use, and saturation scaled to the picked
-      // colour so a near-white pick stays subtle instead of full rainbow
-      const hueDeg = colorful ? (time * 20) % 360 : bh;
-      const satPct = Math.max(25, Math.min(160, Math.round(((colorful ? 80 : bs) / FLARE_BASE_SAT) * 100)));
+      const a     = Math.min(1, op * halo * (0.16 + _bass * 0.55 + kick * 0.55));
 
       ctx.save();
       // clip to the tick rings' opening so the flare doesn't spill into the gap
@@ -266,10 +265,8 @@ export function renderRadialSpectrum(ctx, w, h, t, bands) {
       ctx.closePath();
       ctx.clip();
 
-      ctx.filter = `hue-rotate(${hueDeg.toFixed(1)}deg) saturate(${satPct}%)`;
       ctx.globalAlpha = a;
       ctx.drawImage(_flareSprite, cx - dim / 2, cy - dim / 2, dim, dim);
-      ctx.filter = "none";
       ctx.globalAlpha = 1;
       ctx.restore();
     }
