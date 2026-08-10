@@ -18,6 +18,8 @@ let _lastT      = 0;      // for frame dt
 let _dustSprites = null;  // pre-baked mote sprites, one per hue bucket
 let _ribbonCv   = null;   // half-res scratch canvas for the ribbon styles
 let _ribbonCtx  = null;
+let _veilCv     = null;   // scratch layer for the veil styles (needs its own alpha)
+let _veilCtx    = null;
 
 /* Dust motes are baked once per hue bucket: drawing a sprite is far cheaper
    than building an hsla() string and rasterising two arcs per mote per frame. */
@@ -266,6 +268,96 @@ export function renderAudioSpectrum(ctx, w, h, t, bands) {
     // crisp line
     path(); ctx.lineWidth = 2.4 * scale;
     ctx.strokeStyle = colorful ? hGrad() : hsla(bh, Math.min(100, bs + 6), 66, op); ctx.stroke();
+
+  } else if (style === "veilwave" || style === "veilscallop") {
+    /* A soft veil of colour hangs above the curve and the wave body is punched
+       out of it, so the moving curve reads as a clean window cut into the haze
+       rather than a filled graph. The veil is built by stroking the curve from
+       wide+faint to narrow+dense — centred on the line — and then erasing
+       everything below it, which leaves the density hugging the curve and
+       fading upward. The punch-out needs its own alpha, hence a scratch layer. */
+    const scallop = style === "veilscallop";
+
+    // The veil is soft haze, so it renders at half size (cheap); the bright edge
+    // is stroked afterwards on the main canvas at full size so it stays crisp.
+    const vScale = Math.max(0.32, Math.min(0.5, 1400 / Math.max(w, h)));
+    const VW = Math.max(2, Math.round(w * vScale)), VH = Math.max(2, Math.round(h * vScale));
+    if (!_veilCv || _veilCv.width !== VW || _veilCv.height !== VH) {
+      _veilCv  = new OffscreenCanvas(VW, VH);
+      _veilCtx = _veilCv.getContext("2d");
+    }
+    const vc = _veilCtx;
+    const veilH   = areaH * 1.25;                       // how far the haze reaches up
+    const bandTop = Math.max(0, baseY - areaH - veilH - 4);
+    vc.setTransform(1, 0, 0, 1, 0, 0);
+    vc.clearRect(0, Math.floor(bandTop * vScale), VW, VH - Math.floor(bandTop * vScale));
+    vc.setTransform(vScale, 0, 0, vScale, 0, 0);        // keep full-res coordinates
+    vc.lineJoin = "round"; vc.lineCap = "round";
+    vc.globalCompositeOperation = "source-over";
+
+    // the boundary curve, left to right
+    const SEG = scallop ? 26 : 56;
+    const magAt = (i, n) => {
+      const b0 = Math.floor((i / n) * BAR_COUNT);
+      const b1 = Math.max(b0 + 1, Math.floor(((i + 1) / n) * BAR_COUNT));
+      let s = 0, c = 0;
+      for (let b = b0; b < b1 && b < BAR_COUNT; b++) { s += _bars[b]; c++; }
+      return c ? s / c : 0;
+    };
+    const traceBoundary = (c) => {
+      c.beginPath();
+      c.moveTo(0, baseY);
+      if (scallop) {
+        // connected arcs that meet at cusps on the baseline
+        for (let i = 0; i < SEG; i++) {
+          const x0 = (i / SEG) * w, x1 = ((i + 1) / SEG) * w;
+          const hgt = Math.max(2 * scale, magAt(i, SEG) * areaH);
+          c.quadraticCurveTo((x0 + x1) / 2, baseY - hgt * 2, x1, baseY);
+        }
+      } else {
+        // smooth wave through the bar tops
+        const pts = [];
+        for (let i = 0; i <= SEG; i++) {
+          const m = magAt(Math.min(i, SEG - 1), SEG);
+          pts.push([(i / SEG) * w, baseY - Math.max(1.5 * scale, m * areaH)]);
+        }
+        c.lineTo(pts[0][0], pts[0][1]);
+        for (let i = 0; i < pts.length - 1; i++) {
+          const [x0, y0] = pts[i], [x1, y1] = pts[i + 1];
+          c.quadraticCurveTo(x0, y0, (x0 + x1) / 2, (y0 + y1) / 2);
+        }
+        c.lineTo(pts[pts.length - 1][0], pts[pts.length - 1][1]);
+      }
+    };
+
+    // 1. veil — successive strokes centred on the curve, wide/faint to narrow/dense
+    const PASSES = 6;
+    for (let i = PASSES; i >= 1; i--) {
+      const tt = i / PASSES;                             // 1 = widest
+      traceBoundary(vc);
+      vc.lineWidth = veilH * 2 * tt;                     // *2: half is erased below
+      vc.strokeStyle = colorful
+        ? hsla(rainbowHue(0.5, drift), 80, 62, op * 0.10 * (1 - tt * 0.72))
+        : hsla(bh, Math.max(35, bs), 58, op * 0.10 * (1 - tt * 0.72));
+      vc.stroke();
+    }
+
+    // 2. punch the wave body out of the veil
+    traceBoundary(vc);
+    vc.lineTo(w, h); vc.lineTo(0, h); vc.closePath();
+    vc.globalCompositeOperation = "destination-out";
+    vc.fillStyle = "#000";
+    vc.fill();
+    vc.globalCompositeOperation = "source-over";
+
+    // 3. composite the haze up, then stroke the edge at full size so it stays crisp
+    ctx.globalAlpha = 1;
+    ctx.drawImage(_veilCv, 0, 0, w, h);
+
+    traceBoundary(ctx);
+    ctx.lineWidth = 2.4 * scale;
+    ctx.strokeStyle = colorful ? hGrad() : hsla(bh, Math.min(100, bs + 6), 78, op * 0.95);
+    ctx.stroke();
 
   } else if (style === "ribbon" || style === "ribbondust") {
     // silky flowing ribbons — layered translucent waves with a bright core. The
