@@ -488,6 +488,31 @@ function drawCircle(ctx,r){ctx.beginPath();ctx.arc(0,0,r,0,TAU);}
 function drawHexagon(ctx,r){ctx.beginPath();for(let i=0;i<6;i++){const a=(i/6)*TAU-Math.PI/6;i===0?ctx.moveTo(Math.cos(a)*r,Math.sin(a)*r):ctx.lineTo(Math.cos(a)*r,Math.sin(a)*r);}ctx.closePath();}
 const SHAPE_FN={circle:drawCircle,hexagon:drawHexagon};
 
+/* ── Burst direction — dust puffed outward from centre, like sand blown off a
+   speaker cone on the bass. Two small helpers shared by every shape branch:
+   spawn near the centre (instead of scattered across the whole frame) and,
+   each frame, step radially outward from wherever the particle currently is,
+   re-seeding near centre once it leaves the frame.                          */
+function burstSpawn(w, h, minDim) {
+  const a  = Math.random()*TAU;
+  const r0 = minDim*(0.006+Math.random()*0.05);
+  return [w*0.5+Math.cos(a)*r0, h*0.5+Math.sin(a)*r0];
+}
+function burstStep(p, w, h, minDim, boost) {
+  const cx = w*0.5, cy = h*0.5;
+  let dxc = p.x-cx, dyc = p.y-cy;
+  let r = Math.hypot(dxc, dyc);
+  if (r < minDim*0.004) { const a=Math.random()*TAU; dxc=Math.cos(a); dyc=Math.sin(a); r=1; }
+  const spd = (0.0007 + p.depth*0.0026) * minDim * boost;
+  p.x += (dxc/r)*spd; p.y += (dyc/r)*spd;
+  const margin = minDim*0.035;
+  if (p.x<-margin || p.x>w+margin || p.y<-margin || p.y>h+margin) {
+    const a  = Math.random()*TAU;
+    const r0 = minDim*(0.006+Math.random()*0.05);
+    p.x = cx+Math.cos(a)*r0; p.y = cy+Math.sin(a)*r0;
+  }
+}
+
 /* ── State ───────────────────────────────────────────────────────────────── */
 let _particles   = null;
 let _smoothBands = {subBass:0,bass:0,lowMid:0,mid:0,highMid:0,presence:0,brilliance:0,overall:0};
@@ -517,6 +542,8 @@ function initParticles(w, h) {
   const layers = isSnow ? SNOW_LAYERS : isRain ? RAIN_LAYERS : isGold ? GOLD_LAYERS : isGem ? GEM_LAYERS : LAYER_DEFS;
   const total  = Math.round((isRain ? 340 : isGold ? 260 : isGem ? 210 : 280) * _config.quantity);
   const dir    = _config.direction;
+  const isBurst = dir === "burst" && !isRain;
+  const minDim  = Math.min(w, h);
   const pts    = [];
 
   for (let li=0; li<layers.length; li++) {
@@ -530,8 +557,9 @@ function initParticles(w, h) {
         const sizeT    = Math.pow(Math.random(), 1.3);
         const baseSize = (L.sizeMin + sizeT*(L.sizeMax-L.sizeMin)) * _config.sizeRange;
         const drift    = L.driftMin + Math.random()*(L.driftMax-L.driftMin);
+        const [gx, gy] = isBurst ? burstSpawn(w, h, minDim) : [Math.random()*w, Math.random()*h];
         pts.push({
-          x: Math.random()*w, y: Math.random()*h,
+          x: gx, y: gy,
           vx0: (Math.random()-0.5)*0.00035,
           vy0: dir==="up" ? -drift : dir==="still" ? 0 : drift,
           baseSize, depth, layer: li, role: L.role,
@@ -551,8 +579,9 @@ function initParticles(w, h) {
         const sizeT    = Math.pow(Math.random(), 1.3);
         const baseSize = (L.sizeMin + sizeT*(L.sizeMax-L.sizeMin)) * _config.sizeRange;
         const drift    = L.driftMin + Math.random()*(L.driftMax-L.driftMin);
+        const [gx, gy] = isBurst ? burstSpawn(w, h, minDim) : [Math.random()*w, Math.random()*h];
         pts.push({
-          x: Math.random()*w, y: Math.random()*h,
+          x: gx, y: gy,
           vx0: (Math.random()-0.5)*0.0003,
           vy0: dir==="up" ? -drift : dir==="still" ? 0 : drift,
           baseSize, depth, layer: li, role: L.role,
@@ -591,8 +620,9 @@ function initParticles(w, h) {
         if (_config.shape==="bubble")   vy0 *= 0.55;   // bubbles drift lazily
       }
 
+      const [sx, sy] = isBurst ? burstSpawn(w, h, minDim) : [Math.random()*w, Math.random()*h];
       pts.push({
-        x: Math.random()*w, y: Math.random()*h,
+        x: sx, y: sy,
         vx0: (Math.random()-0.5)*0.0003,
         vy0, baseSize, depth, layer: li,
         sprite:    L.sprite||null,
@@ -643,6 +673,11 @@ export function renderBokehSparkle(ctx, w, h, t, bands) {
   const spike   = Math.max(0, bass-_smoothBass-0.06);
   _beatImpulse += spike*4; _beatImpulse *= 0.82;
 
+  const isBurst = dir === "burst" && !isRain;
+  // how hard the puff blows outward — surges with bass and kicks on the beat,
+  // like sand skittering off a subwoofer cone
+  const burstBoost = 1 + _smoothBands.bass*2.0 + _smoothBands.subBass*1.1 + _beatImpulse*2.6;
+
   // coherent wind — one gust drives rain slant & snow drift together (musical sway)
   const wind = simplex.noise2D(time*0.12, 7.3)*0.10 + Math.sin(time*0.23)*0.05 + _beatImpulse*0.03;
 
@@ -659,20 +694,24 @@ export function renderBokehSparkle(ctx, w, h, t, bands) {
 
     // ── GEMS: faceted jewels scattered through a jewel-toned haze ──
     if (isGem) {
-      // slow luxurious drift + coherent wind
-      let dy = p.vy0*h*(1+freq*0.25);
-      let dx = p.vx0*h
-             + simplex.noise2D(p.noiseOff, time*0.045)*minDim*0.00020
-             + wind*minDim*0.0007*(0.3+p.depth);
-      if (dir==="still") dy  = simplex.noise2D(p.noiseOff+300, time*0.035)*minDim*0.00020;
-      else               dy += simplex.noise2D(p.noiseOff+200, time*0.045)*minDim*0.00014;
-      p.x += dx; p.y += dy;
+      if (isBurst) {
+        burstStep(p, w, h, minDim, burstBoost);
+      } else {
+        // slow luxurious drift + coherent wind
+        let dy = p.vy0*h*(1+freq*0.25);
+        let dx = p.vx0*h
+               + simplex.noise2D(p.noiseOff, time*0.045)*minDim*0.00020
+               + wind*minDim*0.0007*(0.3+p.depth);
+        if (dir==="still") dy  = simplex.noise2D(p.noiseOff+300, time*0.035)*minDim*0.00020;
+        else               dy += simplex.noise2D(p.noiseOff+200, time*0.045)*minDim*0.00014;
+        p.x += dx; p.y += dy;
 
-      const m = p.baseSize*minDim + 24;
-      if (p.y>h+m)  { p.y=-m;  p.x=Math.random()*w; }
-      if (p.y<-m)   { p.y=h+m; p.x=Math.random()*w; }
-      if (p.x>w+m)    p.x=-m;
-      if (p.x<-m)     p.x=w+m;
+        const m = p.baseSize*minDim + 24;
+        if (p.y>h+m)  { p.y=-m;  p.x=Math.random()*w; }
+        if (p.y<-m)   { p.y=h+m; p.x=Math.random()*w; }
+        if (p.x>w+m)    p.x=-m;
+        if (p.x<-m)     p.x=w+m;
+      }
 
       const breathe = 1 + Math.sin(time*0.45+p.phase)*0.06;
       const bloom   = 1 + _beatImpulse*0.14;
@@ -745,20 +784,24 @@ export function renderBokehSparkle(ctx, w, h, t, bands) {
 
     // ── GOLDEN DUST: soft bokeh discs + fine sparkle glitter ──
     if (isGold) {
-      // gentle float + noise wander + coherent wind
-      let dy = p.vy0*h*(1+freq*0.3);
-      let dx = p.vx0*h
-             + simplex.noise2D(p.noiseOff, time*0.05)*minDim*0.00022
-             + wind*minDim*0.0008*(0.3+p.depth);
-      if (dir==="still") dy  = simplex.noise2D(p.noiseOff+300, time*0.04)*minDim*0.00022;
-      else               dy += simplex.noise2D(p.noiseOff+200, time*0.05)*minDim*0.00016;
-      p.x += dx; p.y += dy;
+      if (isBurst) {
+        burstStep(p, w, h, minDim, burstBoost);
+      } else {
+        // gentle float + noise wander + coherent wind
+        let dy = p.vy0*h*(1+freq*0.3);
+        let dx = p.vx0*h
+               + simplex.noise2D(p.noiseOff, time*0.05)*minDim*0.00022
+               + wind*minDim*0.0008*(0.3+p.depth);
+        if (dir==="still") dy  = simplex.noise2D(p.noiseOff+300, time*0.04)*minDim*0.00022;
+        else               dy += simplex.noise2D(p.noiseOff+200, time*0.05)*minDim*0.00016;
+        p.x += dx; p.y += dy;
 
-      const m = p.baseSize*minDim + 20;
-      if (p.y>h+m)  { p.y=-m;  p.x=Math.random()*w; }
-      if (p.y<-m)   { p.y=h+m; p.x=Math.random()*w; }
-      if (p.x>w+m)    p.x=-m;
-      if (p.x<-m)     p.x=w+m;
+        const m = p.baseSize*minDim + 20;
+        if (p.y>h+m)  { p.y=-m;  p.x=Math.random()*w; }
+        if (p.y<-m)   { p.y=h+m; p.x=Math.random()*w; }
+        if (p.x>w+m)    p.x=-m;
+        if (p.x<-m)     p.x=w+m;
+      }
 
       // size: breathe + beat bloom
       const breathe = 1 + Math.sin(time*0.5+p.phase)*0.08;
@@ -833,44 +876,48 @@ export function renderBokehSparkle(ctx, w, h, t, bands) {
     }
 
     // ── Movement ─────────────────────────────────────────────
-    const speedBoost = 1 + freq*0.45 + _beatImpulse*0.10;
-    let dy = p.vy0*h*speedBoost;
-    let dx = p.vx0*h;
-
-    if (isSnow) {
-      // Smooth sway per particle — sine only, noise is small correction
-      const sway = Math.sin(time*p.swayFreq + p.swayPhase)
-                 + simplex.noise2D(p.noiseOff, time*0.025) * 0.3;
-      dx += sway * p.swayAmp * minDim;
-      dx += wind * minDim * 0.0018 * (0.35 + p.depth);   // coherent wind gust — near flakes pushed more
-      dy *= 1 + simplex.noise2D(p.noiseOff+10, time*0.04)*0.15;
-      if (_beatImpulse > 0.05)
-        dx += simplex.noise2D(p.noiseOff+400, time*1.5)*_beatImpulse*p.depth*minDim*0.0003;
-      if (dir==="still")
-        dy = simplex.noise2D(p.noiseOff+300, time*0.03)*minDim*0.00030;
-    } else if (isBubble) {
-      // gentle wobble as bubbles drift — stronger sway than dust
-      dx += Math.sin(time*(0.5+p.swayFreq) + p.swayPhase) * minDim*0.00030*(0.4+p.depth)
-          + simplex.noise2D(p.noiseOff, time*0.05)*minDim*0.00020;
-      const ny=simplex.noise2D(p.noiseOff+200, time*0.05)*minDim*0.00020;
-      dy = dir==="still" ? ny : dy*0.75+ny;
-    } else if (_config.shape==="hexagon") {
-      dx += simplex.noise2D(p.x/w*2, time*0.06+p.noiseOff)*minDim*0.0007;
-      const ny=simplex.noise2D(p.y/h*2, time*0.06+p.noiseOff+100)*minDim*0.0005;
-      dy = dir==="still" ? ny : dy+ny;
+    if (isBurst) {
+      burstStep(p, w, h, minDim, burstBoost);
     } else {
-      dx += simplex.noise2D(p.noiseOff, time*0.07)*minDim*0.0005;
-      const ny=simplex.noise2D(p.noiseOff+200, time*0.07)*minDim*0.0003;
-      dy = dir==="still" ? ny : dy+ny;
+      const speedBoost = 1 + freq*0.45 + _beatImpulse*0.10;
+      let dy = p.vy0*h*speedBoost;
+      let dx = p.vx0*h;
+
+      if (isSnow) {
+        // Smooth sway per particle — sine only, noise is small correction
+        const sway = Math.sin(time*p.swayFreq + p.swayPhase)
+                   + simplex.noise2D(p.noiseOff, time*0.025) * 0.3;
+        dx += sway * p.swayAmp * minDim;
+        dx += wind * minDim * 0.0018 * (0.35 + p.depth);   // coherent wind gust — near flakes pushed more
+        dy *= 1 + simplex.noise2D(p.noiseOff+10, time*0.04)*0.15;
+        if (_beatImpulse > 0.05)
+          dx += simplex.noise2D(p.noiseOff+400, time*1.5)*_beatImpulse*p.depth*minDim*0.0003;
+        if (dir==="still")
+          dy = simplex.noise2D(p.noiseOff+300, time*0.03)*minDim*0.00030;
+      } else if (isBubble) {
+        // gentle wobble as bubbles drift — stronger sway than dust
+        dx += Math.sin(time*(0.5+p.swayFreq) + p.swayPhase) * minDim*0.00030*(0.4+p.depth)
+            + simplex.noise2D(p.noiseOff, time*0.05)*minDim*0.00020;
+        const ny=simplex.noise2D(p.noiseOff+200, time*0.05)*minDim*0.00020;
+        dy = dir==="still" ? ny : dy*0.75+ny;
+      } else if (_config.shape==="hexagon") {
+        dx += simplex.noise2D(p.x/w*2, time*0.06+p.noiseOff)*minDim*0.0007;
+        const ny=simplex.noise2D(p.y/h*2, time*0.06+p.noiseOff+100)*minDim*0.0005;
+        dy = dir==="still" ? ny : dy+ny;
+      } else {
+        dx += simplex.noise2D(p.noiseOff, time*0.07)*minDim*0.0005;
+        const ny=simplex.noise2D(p.noiseOff+200, time*0.07)*minDim*0.0003;
+        dy = dir==="still" ? ny : dy+ny;
+      }
+
+      p.x+=dx; p.y+=dy;
+
+      const m = p.baseSize*minDim*3+10;
+      if (p.y>h+m)  { p.y=-m;  p.x=Math.random()*w; }
+      if (p.y<-m-10){ p.y=h+m; p.x=Math.random()*w; }
+      if (p.x>w+m)   p.x=-m;
+      if (p.x<-m)    p.x=w+m;
     }
-
-    p.x+=dx; p.y+=dy;
-
-    const m = p.baseSize*minDim*3+10;
-    if (p.y>h+m)  { p.y=-m;  p.x=Math.random()*w; }
-    if (p.y<-m-10){ p.y=h+m; p.x=Math.random()*w; }
-    if (p.x>w+m)   p.x=-m;
-    if (p.x<-m)    p.x=w+m;
 
     // Size
     const beatPulse = 1+_beatImpulse*0.14;

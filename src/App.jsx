@@ -821,6 +821,7 @@ export default function App() {
                         ["down", "↓ ตก"],
                         ["up", "↑ ลอย"],
                         ["still", "• นิ่ง"],
+                        ["burst", "✺ พ่นออก"],
                       ].map(([val, label]) => (
                         <button key={val} onClick={() => setBokehDirection(val)} style={{
                           flex: 1, padding: "5px 6px", borderRadius: 6, fontSize: 12, fontFamily: "'Sarabun'", cursor: "pointer",
