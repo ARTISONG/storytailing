@@ -136,6 +136,8 @@ export default function App() {
   const [radialTicks, setRadialTicks] = useState(110);
   const [radialJitter, setRadialJitter] = useState(1.0);
   const [radialDust, setRadialDust] = useState(1.0);
+  const [radialHalo, setRadialHalo] = useState(0.8);
+  const [radialHaloScale, setRadialHaloScale] = useState(1.9);
   const [radialColor, setRadialColor] = useState("#ffffff");
   const [radialColorMode, setRadialColorMode] = useState("gradient");
   const [radialOpacity, setRadialOpacity] = useState(1.0);
@@ -173,8 +175,9 @@ export default function App() {
   useEffect(() => {
     setRadialConfig({ cx: radialCX, cy: radialCY, radius: radialRadius, gapDeg: radialGapDeg,
       ticks: radialTicks, jitter: radialJitter, dust: radialDust,
+      halo: radialHalo, haloScale: radialHaloScale,
       color: radialColor, colorMode: radialColorMode, opacity: radialOpacity });
-  }, [radialCX, radialCY, radialRadius, radialGapDeg, radialTicks, radialJitter, radialDust, radialColor, radialColorMode, radialOpacity]);
+  }, [radialCX, radialCY, radialRadius, radialGapDeg, radialTicks, radialJitter, radialDust, radialHalo, radialHaloScale, radialColor, radialColorMode, radialOpacity]);
 
   // YouTube chapter list — track start times across all loops
   const youtubeChapters = useMemo(() => {
@@ -1023,6 +1026,20 @@ export default function App() {
                     </label>
                     <input type="range" min={0} max={250} value={Math.round(radialDust * 100)}
                       onChange={e => setRadialDust(Number(e.target.value) / 100)}
+                      style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
+
+                    <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>
+                      วงกลด ({Math.round(radialHalo * 100)}%{radialHalo < 0.01 ? " — ปิด" : ""})
+                    </label>
+                    <input type="range" min={0} max={200} value={Math.round(radialHalo * 100)}
+                      onChange={e => setRadialHalo(Number(e.target.value) / 100)}
+                      style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
+
+                    <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>
+                      ขนาดวงกลด ({radialHaloScale.toFixed(2)}×)
+                    </label>
+                    <input type="range" min={110} max={320} value={Math.round(radialHaloScale * 100)}
+                      onChange={e => setRadialHaloScale(Number(e.target.value) / 100)}
                       style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
 
                     <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>

@@ -13,6 +13,8 @@ let _config = {
   ticks: 110,            // ticks per ring
   jitter: 1.0,           // granular vibration strength
   dust: 1.0,             // dust emission
+  halo: 0.8,             // faint outer halo loop (0 = off)
+  haloScale: 1.9,        // its radius, as a multiple of the ring radius
   color: "#ffffff",
   colorMode: "gradient", // "gradient" (single hue) | "colorful" (hue around the ring)
   opacity: 1.0,
@@ -180,6 +182,35 @@ export function renderRadialSpectrum(ctx, w, h, t, bands) {
     ctx.strokeStyle = colorful
       ? hsla((time * 20 + ring.seed * 0.1) % 360, 80, ring.lum - 20, op * ring.alpha)
       : hsla(bh, bs, ring.lum, op * ring.alpha);
+    ctx.stroke();
+  }
+
+  /* ── halo: a wide, faint loop well outside the ticks that ripples slowly ──
+     Not a perfect circle — a few slow harmonics push it in and out so it reads
+     as a standing wave rather than an outline, and it swells on the kick.     */
+  const halo = _config.halo;
+  if (halo > 0.01) {
+    const hr = rBase * _config.haloScale;
+    const HS = 180;
+    const amp = 0.014 + (bands.overall || 0) * 0.030 + kick * 0.045;
+    ctx.beginPath();
+    for (let i = 0; i <= HS; i++) {
+      const a = (i / HS) * TAU - Math.PI / 2;
+      const ripple = Math.sin(a * 5 + time * 0.70) * 0.50
+                   + Math.sin(a * 8 - time * 0.45) * 0.30
+                   + Math.sin(a * 3 + time * 0.25) * 0.20;
+      const r = hr * (1 + ripple * amp);
+      const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    const hHue = colorful ? (time * 20 + 200) % 360 : bh;
+    // soft bloom, then a hairline on top — that pairing is what reads as a halo
+    ctx.lineWidth   = 5 * scale;
+    ctx.strokeStyle = hsla(hHue, colorful ? 70 : bs, 78, op * halo * 0.07);
+    ctx.stroke();
+    ctx.lineWidth   = 1 * scale;
+    ctx.strokeStyle = hsla(hHue, colorful ? 60 : bs, 90, op * halo * 0.34);
     ctx.stroke();
   }
 
