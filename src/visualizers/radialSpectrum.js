@@ -185,32 +185,56 @@ export function renderRadialSpectrum(ctx, w, h, t, bands) {
     ctx.stroke();
   }
 
-  /* ── halo: a wide, faint loop well outside the ticks that ripples slowly ──
-     Not a perfect circle — a few slow harmonics push it in and out so it reads
-     as a standing wave rather than an outline, and it swells on the kick.     */
+  /* ── halo: a soft corona of fine rays, not an outline ──
+     A hard stroke reads as a drawn circle; what we want is diffuse light. So
+     it's a transparent-edged glow band with a comb of faint radial rays inside
+     it, both undulating on slow harmonics — soft, gelatinous, bokeh-like.     */
   const halo = _config.halo;
   if (halo > 0.01) {
-    const hr = rBase * _config.haloScale;
-    const HS = 180;
-    const amp = 0.014 + (bands.overall || 0) * 0.030 + kick * 0.045;
-    ctx.beginPath();
-    for (let i = 0; i <= HS; i++) {
-      const a = (i / HS) * TAU - Math.PI / 2;
-      const ripple = Math.sin(a * 5 + time * 0.70) * 0.50
-                   + Math.sin(a * 8 - time * 0.45) * 0.30
-                   + Math.sin(a * 3 + time * 0.25) * 0.20;
-      const r = hr * (1 + ripple * amp);
-      const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r;
-      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-    }
-    ctx.closePath();
+    const hr   = rBase * _config.haloScale;
     const hHue = colorful ? (time * 20 + 200) % 360 : bh;
-    // soft bloom, then a hairline on top — that pairing is what reads as a halo
-    ctx.lineWidth   = 5 * scale;
-    ctx.strokeStyle = hsla(hHue, colorful ? 70 : bs, 78, op * halo * 0.07);
+    const hSat = colorful ? 65 : bs;
+    const amp  = 0.020 + (bands.overall || 0) * 0.038 + kick * 0.055;
+    const wob  = (a) => Math.sin(a * 5 + time * 0.70) * 0.50
+                      + Math.sin(a * 8 - time * 0.45) * 0.30
+                      + Math.sin(a * 3 + time * 0.25) * 0.20;
+
+    // 1. the jelly — an annulus of light that fades out on both edges
+    const gr = ctx.createRadialGradient(cx, cy, hr * 0.62, cx, cy, hr * 1.34);
+    gr.addColorStop(0,    hsla(hHue, hSat, 80, 0));
+    gr.addColorStop(0.35, hsla(hHue, hSat, 82, op * halo * 0.075));
+    gr.addColorStop(0.55, hsla(hHue, hSat, 88, op * halo * 0.10));
+    gr.addColorStop(0.78, hsla(hHue, hSat, 82, op * halo * 0.05));
+    gr.addColorStop(1,    hsla(hHue, hSat, 80, 0));
+    ctx.fillStyle = gr;
+    // fill the annulus only — the middle is transparent anyway, and skipping it
+    // keeps a large fill off the centre of the frame
+    ctx.beginPath();
+    ctx.arc(cx, cy, hr * 1.34, 0, TAU);
+    ctx.arc(cx, cy, hr * 0.62, 0, TAU, true);
+    ctx.fill();
+
+    // 2. the rays — a fine comb riding the same wobble, dense enough that the
+    //    individual strokes dissolve into a feathered band
+    const HN = 220;
+    ctx.beginPath();
+    for (let i = 0; i < HN; i++) {
+      const a  = (i / HN) * TAU - Math.PI / 2;
+      const wv = wob(a);
+      const mid = hr * (1 + wv * amp);
+      // rays breathe with the same wave, so the band feels alive rather than flat
+      const lenF = 0.055 + 0.075 * (0.5 + wv * 0.5) + _bass * 0.05;
+      const half = hr * lenF * 0.5;
+      const ca = Math.cos(a), sa = Math.sin(a);
+      ctx.moveTo(cx + ca * (mid - half), cy + sa * (mid - half));
+      ctx.lineTo(cx + ca * (mid + half), cy + sa * (mid + half));
+    }
+    ctx.lineWidth   = 1.1 * scale;
+    ctx.strokeStyle = hsla(hHue, hSat, 88, op * halo * 0.16);
     ctx.stroke();
-    ctx.lineWidth   = 1 * scale;
-    ctx.strokeStyle = hsla(hHue, colorful ? 60 : bs, 90, op * halo * 0.34);
+    // a second, shorter pass concentrates brightness at the core of the band
+    ctx.lineWidth   = 0.8 * scale;
+    ctx.strokeStyle = hsla(hHue, Math.max(0, hSat - 15), 95, op * halo * 0.10);
     ctx.stroke();
   }
 
