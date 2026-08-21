@@ -1,7 +1,7 @@
 // ─── RADIAL SPECTRUM — twin rings of light that shiver like sand on a woofer ──
 //   Two concentric rings of fine radial ticks frame a centre point. Every bit
 //   of motion — tick length, the granular jitter, the ring's breathing, the
-//   halo's pulse, the dust blown radially outward — is driven by the bass
+//   outward bloom, the dust blown radially outward — is driven by the bass
 //   envelope alone, the way sand poured onto a subwoofer only answers to the
 //   low end, not the whole mix.
 
@@ -15,10 +15,10 @@ let _config = {
   jitter: 1.0,           // granular vibration strength
   tickLength: 1.0,       // scales how long/short the radial ticks are
   dust: 1.0,             // dust emission
-  halo: 0.8,             // faint outer halo loop (0 = off)
-  haloGap: 0.15,         // distance from the ray tips to the flare, as a fraction of the min dimension
-  haloThickness: 1.0,    // how thick/thin the flare's glow band is
-  haloSize: 1.0,         // its own visual size, independent of the gap above
+  bloom: 0.8,            // outward bass bloom intensity (0 = off)
+  bloomGap: 0.15,        // where it starts, out from the ray tips, as a fraction of the min dimension
+  bloomSpread: 1.0,      // how far it keeps fading outward
+  bloomSize: 1.0,        // overall scale of the bloom
   color: "#ffffff",
   colorMode: "gradient", // "gradient" (single hue) | "colorful" (hue around the ring)
   opacity: 1.0,
@@ -77,89 +77,11 @@ function buildSprite() {
   _sprite = oc;
 }
 
-/* ── lens-flare halo ring — baked with the exact tick colour, then a drawImage
-   A real lens-flare halo is dispersed light through glass: a soft torus-shaped
-   glow with a chromatic (rainbow-fringed) sweep and one bright specular hot
-   spot — diffuse, not a drawn ring with a hard edge. It's baked directly with
-   the SAME hue/saturation math the ticks use (hsla(hue, sat, ...)), so the
-   colour matches exactly — no CSS hue-rotate() approximation, which drifts
-   the perceived hue away from the ticks' actual colour, especially at large
-   rotations. Re-baked only when the target hue/sat actually changes by a
-   meaningful amount (cheap in "gradient" mode — the user rarely touches the
-   colour picker; in "colorful" mode the hue keeps drifting, so it re-bakes a
-   few times a second, still far cheaper than every frame).
-   Ring mid-band sits at 0.60 of the sprite's half-size — see FLARE_SF — so
-   the caller only needs one multiply to know the draw size for a target
-   radius. */
-const FLARE_MID_FRAC = 0.60;
-const FLARE_SF = 1 / FLARE_MID_FRAC;      // draw diameter = hr * 2 * FLARE_SF
-let _flareSprite = null, _flareKey = null;
-
-function buildFlareSprite(hue, sat, thickness) {
-  const key = `${Math.round(hue / 3)}:${Math.round(sat)}:${Math.round(thickness * 20)}`;
-  if (_flareKey === key) return;
-  _flareKey = key;
-
-  const S = 512, c = S / 2;
-  const glintFrac = 0.14;                 // where the "sun hits the glass"
-  const circDist = (a, b) => { let d = Math.abs(a - b) % 1; return d > 0.5 ? 1 - d : d; };
-  const baseSat = Math.max(30, sat);      // real dispersion still shows some colour even for a near-white pick
-
-  // ring layer: conic hue sweep + specular hot spot, opaque (alpha shaped later)
-  const ring = new OffscreenCanvas(S, S);
-  const rc = ring.getContext("2d");
-  const conic = rc.createConicGradient(-Math.PI / 2, c, c);
-  const STOPS = 48;
-  for (let i = 0; i <= STOPS; i++) {
-    const frac = i / STOPS;
-    const boost = Math.exp(-(circDist(frac, glintFrac) ** 2) / (2 * 0.05 * 0.05));
-    const h = (hue + Math.sin(frac * TAU * 2) * 14 + 360) % 360;   // gentle dispersion wobble around the real hue
-    const s = Math.max(18, baseSat * (1 - boost * 0.75));
-    const l = 50 + boost * 46;                                     // whites-out at the glint
-    conic.addColorStop(frac, hsla(Math.round(h), Math.round(s), Math.round(l), 1));
-  }
-  rc.fillStyle = conic;
-  rc.fillRect(0, 0, S, S);
-
-  // shape it into a torus — wide, gradual fade on both sides (no plateau), so
-  // it reads as diffuse light instead of a ring with an edge. `thickness`
-  // widens/narrows the fade zone around the peak (a gradient naturally holds
-  // its first/last stop's colour beyond their offsets, so 3 stops are enough
-  // — no need for extra 0.00/1.00 anchors).
-  // Both mask stops must stay inside (0,1); the tighter bound is the outer
-  // side, since FLARE_MID_FRAC (0.6) is closer to 1 than to 0. Approach that
-  // ceiling exponentially rather than clamping linearly, so the whole slider
-  // range keeps making a visible difference instead of saturating early and
-  // going "dead" over its top half.
-  const bwMax = Math.min(FLARE_MID_FRAC, 1 - FLARE_MID_FRAC) - 0.01;
-  const bw = Math.max(0.03, bwMax * (1 - Math.exp(-1.1 * thickness)));
-  const mask = rc.createRadialGradient(c, c, 0, c, c, c);
-  mask.addColorStop(FLARE_MID_FRAC - bw, "rgba(0,0,0,0)");
-  mask.addColorStop(FLARE_MID_FRAC,      "rgba(0,0,0,1)");
-  mask.addColorStop(FLARE_MID_FRAC + bw, "rgba(0,0,0,0)");
-  rc.globalCompositeOperation = "destination-in";
-  rc.fillStyle = mask;
-  rc.fillRect(0, 0, S, S);
-  rc.globalCompositeOperation = "source-over";
-
-  // final sprite: a much stronger blur than before — the previous 3px was
-  // baked at 512px and barely registered once scaled up to the ring's actual
-  // on-screen size, which is what made it read as a hard-edged blob instead
-  // of soft glass. Plus a faint ambient wash tinted to the same real hue.
-  const final = new OffscreenCanvas(S, S);
-  const fc = final.getContext("2d");
-  const amb = fc.createRadialGradient(c, c, S * 0.16, c, c, S * 0.52);
-  amb.addColorStop(0,    "rgba(255,255,255,0)");
-  amb.addColorStop(0.6,  hsla(Math.round(hue), Math.max(20, baseSat * 0.6), 78, 0.05));
-  amb.addColorStop(1,    "rgba(255,255,255,0)");
-  fc.fillStyle = amb;
-  fc.beginPath(); fc.arc(c, c, S * 0.5, 0, TAU); fc.fill();
-  fc.filter = "blur(16px)";
-  fc.drawImage(ring, 0, 0);
-  fc.filter = "none";
-
-  _flareSprite = final;
-}
+/* The old lens-flare halo (a baked sprite with chromatic dispersion and a
+   specular glint) is gone — the bloom below replaces it with a plain outward
+   fade of the picked colour, which reads as bass pressure leaving the cone
+   rather than as light through glass. It needs no sprite: one radial gradient
+   fill per frame, in exactly the hue/saturation the ticks use. */
 
 /* ── main render ────────────────────────────────────────────────────────── */
 export function renderRadialSpectrum(ctx, w, h, t, bands) {
@@ -254,30 +176,38 @@ export function renderRadialSpectrum(ctx, w, h, t, bands) {
     ctx.stroke();
   }
 
-  /* ── halo: a lens-flare ring — dispersed light, not a wave or an outline ──
-     Rebaked (see buildFlareSprite) whenever the tick colour, or haloThickness,
-     actually changes; per frame it's just a drawImage. Always a full circle
-     — unlike the ticks it does not follow gapDeg. Positioned by haloGap, a
-     literal distance out from the ray tips (so it tracks them as they grow or
-     shrink with the bass or the tick-length slider), sized by haloSize
-     independently. It fades close to invisible at rest and swells clearly
-     with the bass and on the kick — a genuine pulse, not a constant-on wash. */
-  const halo = _config.halo;
-  if (halo > 0.01) {
-    // same hue/saturation basis the ticks use — baked directly, no filter
-    const hueDeg = colorful ? (time * 20) % 360 : bh;
-    const satAct = colorful ? 80 : bs;
-    buildFlareSprite(hueDeg, satAct, _config.haloThickness);
-    if (_flareSprite) {
-      const hr    = outerTipRadius + _config.haloGap * minDim;
-      const pulse = 1 + _bass * 0.06 + kick * 0.14;
-      const dim   = hr * 2 * FLARE_SF * pulse * _config.haloSize;
-      const a     = Math.min(1, op * halo * (0.16 + _bass * 0.55 + kick * 0.55));
+  /* ── bloom: the picked colour fading outward, like the pressure the bass
+     pushes off the cone. Always a full circle — unlike the ticks it does not
+     follow gapDeg. It starts bloomGap out from the ray tips (so it tracks them
+     as they grow/shrink with the bass or the tick-length slider), fades over
+     bloomSpread, and is scaled as a whole by bloomSize. The wave itself pushes
+     further out and brightens with the bass, so it is close to invisible at
+     rest and surges on the kick.                                            */
+  const bloom = _config.bloom;
+  if (bloom > 0.01) {
+    // exactly the hue/saturation the ticks are using this frame
+    const hueDeg = Math.round(colorful ? (time * 20) % 360 : bh);
+    const satAct = Math.round(colorful ? 80 : bs);
 
-      ctx.globalAlpha = a;
-      ctx.drawImage(_flareSprite, cx - dim / 2, cy - dim / 2, dim, dim);
-      ctx.globalAlpha = 1;
-    }
+    const push = 1 + _bass * 0.25 + kick * 0.55;          // the cone's excursion
+    const r0   = (outerTipRadius + _config.bloomGap * minDim) * _config.bloomSize;
+    const r1   = r0 + Math.max(minDim * 0.02, _config.bloomSpread * minDim * 0.30 * _config.bloomSize * push);
+    const rIn  = Math.max(0.01, r0 * 0.72);               // soft inner ramp, no hard edge
+    const a    = Math.min(1, op * bloom * (0.10 + _bass * 0.62 + kick * 0.60));
+
+    // peak sits where the bloom starts; rIn < r0 < r1 keeps this inside (0,1)
+    const peak = Math.max(0.001, Math.min(0.999, (r0 - rIn) / (r1 - rIn)));
+    const g = ctx.createRadialGradient(cx, cy, rIn, cx, cy, r1);
+    g.addColorStop(0,    hsla(hueDeg, satAct, 62, 0));
+    g.addColorStop(peak, hsla(hueDeg, satAct, 62, a));
+    g.addColorStop(1,    hsla(hueDeg, satAct, 62, 0));
+    ctx.fillStyle = g;
+    // annulus only — inside rIn the gradient is fully transparent anyway, so
+    // skipping it keeps a large fill off the middle of the frame
+    ctx.beginPath();
+    ctx.arc(cx, cy, r1, 0, TAU);
+    ctx.arc(cx, cy, rIn, 0, TAU, true);
+    ctx.fill();
   }
 
   /* ── dust blown off the ring on every kick ── */

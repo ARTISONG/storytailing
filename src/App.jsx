@@ -137,10 +137,10 @@ export default function App() {
   const [radialJitter, setRadialJitter] = useState(1.0);
   const [radialTickLength, setRadialTickLength] = useState(1.0);
   const [radialDust, setRadialDust] = useState(1.0);
-  const [radialHalo, setRadialHalo] = useState(0.8);
-  const [radialHaloGap, setRadialHaloGap] = useState(0.15);
-  const [radialHaloThickness, setRadialHaloThickness] = useState(1.0);
-  const [radialHaloSize, setRadialHaloSize] = useState(1.0);
+  const [radialBloom, setRadialBloom] = useState(0.8);
+  const [radialBloomGap, setRadialBloomGap] = useState(0.15);
+  const [radialBloomSpread, setRadialBloomSpread] = useState(1.0);
+  const [radialBloomSize, setRadialBloomSize] = useState(1.0);
   const [radialColor, setRadialColor] = useState("#ffffff");
   const [radialColorMode, setRadialColorMode] = useState("gradient");
   const [radialOpacity, setRadialOpacity] = useState(1.0);
@@ -180,9 +180,9 @@ export default function App() {
   useEffect(() => {
     setRadialConfig({ cx: radialCX, cy: radialCY, radius: radialRadius, gapDeg: radialGapDeg,
       ticks: radialTicks, jitter: radialJitter, tickLength: radialTickLength, dust: radialDust,
-      halo: radialHalo, haloGap: radialHaloGap, haloThickness: radialHaloThickness, haloSize: radialHaloSize,
+      bloom: radialBloom, bloomGap: radialBloomGap, bloomSpread: radialBloomSpread, bloomSize: radialBloomSize,
       color: radialColor, colorMode: radialColorMode, opacity: radialOpacity });
-  }, [radialCX, radialCY, radialRadius, radialGapDeg, radialTicks, radialJitter, radialTickLength, radialDust, radialHalo, radialHaloGap, radialHaloThickness, radialHaloSize, radialColor, radialColorMode, radialOpacity]);
+  }, [radialCX, radialCY, radialRadius, radialGapDeg, radialTicks, radialJitter, radialTickLength, radialDust, radialBloom, radialBloomGap, radialBloomSpread, radialBloomSize, radialColor, radialColorMode, radialOpacity]);
 
   // YouTube chapter list — track start times across all loops
   const youtubeChapters = useMemo(() => {
@@ -1051,31 +1051,31 @@ export default function App() {
                       style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
 
                     <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>
-                      วงกลด ({Math.round(radialHalo * 100)}%{radialHalo < 0.01 ? " — ปิด" : ""})
+                      แสงเบสฟุ้ง ({Math.round(radialBloom * 100)}%{radialBloom < 0.01 ? " — ปิด" : ""})
                     </label>
-                    <input type="range" min={0} max={200} value={Math.round(radialHalo * 100)}
-                      onChange={e => setRadialHalo(Number(e.target.value) / 100)}
+                    <input type="range" min={0} max={200} value={Math.round(radialBloom * 100)}
+                      onChange={e => setRadialBloom(Number(e.target.value) / 100)}
                       style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
 
                     <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>
-                      ระยะห่างปลายเส้น–Lens Flare ({Math.round(radialHaloGap * 100)}%)
+                      ระยะห่างจากปลายเส้น ({Math.round(radialBloomGap * 100)}%)
                     </label>
-                    <input type="range" min={0} max={40} value={Math.round(radialHaloGap * 100)}
-                      onChange={e => setRadialHaloGap(Number(e.target.value) / 100)}
+                    <input type="range" min={0} max={40} value={Math.round(radialBloomGap * 100)}
+                      onChange={e => setRadialBloomGap(Number(e.target.value) / 100)}
                       style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
 
                     <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>
-                      ความหนา Lens Flare ({Math.round(radialHaloThickness * 100)}%)
+                      ระยะฟุ้งกระจาย ({Math.round(radialBloomSpread * 100)}%)
                     </label>
-                    <input type="range" min={20} max={250} value={Math.round(radialHaloThickness * 100)}
-                      onChange={e => setRadialHaloThickness(Number(e.target.value) / 100)}
+                    <input type="range" min={20} max={250} value={Math.round(radialBloomSpread * 100)}
+                      onChange={e => setRadialBloomSpread(Number(e.target.value) / 100)}
                       style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
 
                     <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>
-                      ขนาดแสง Lens Flare ({Math.round(radialHaloSize * 100)}%)
+                      ขนาดแสงเบส ({Math.round(radialBloomSize * 100)}%)
                     </label>
-                    <input type="range" min={40} max={220} value={Math.round(radialHaloSize * 100)}
-                      onChange={e => setRadialHaloSize(Number(e.target.value) / 100)}
+                    <input type="range" min={40} max={220} value={Math.round(radialBloomSize * 100)}
+                      onChange={e => setRadialBloomSize(Number(e.target.value) / 100)}
                       style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
 
                     <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>

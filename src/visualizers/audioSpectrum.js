@@ -396,7 +396,7 @@ export function renderAudioSpectrum(ctx, w, h, t, bands) {
         // in single-colour mode the strands step deep → light, so the picked
         // colour actually reads as a dark→pale fade instead of a white glow
         lum:  colorful ? 58 : 30 + t01 * 44,
-        thick: (0.8 + wf * 4.6) * scale,
+        thick: (0.6 + wf * 3.4) * scale,
         alpha: op * (1.0 - wf * 0.66),
         ampR: amp * (0.55 + 0.45 * Math.sin(r * 1.27 + 1)),
         f1: 2.2 + r * 0.55, f2: 3.6 + r * 0.42,
@@ -434,13 +434,19 @@ export function renderAudioSpectrum(ctx, w, h, t, bands) {
         const y = ribbonY(rb, xt, win);
         i === 0 ? rc.moveTo(xt * w, y) : rc.lineTo(xt * w, y);
       }
-      // sheer halo, then the strand at its own weight — broad strands stay
-      // translucent, fine ones stay dense, which is what gives the depth
-      rc.lineWidth   = rb.thick * 2.0;
-      rc.strokeStyle = hsla(rb.hue, rb.sat, Math.min(90, rb.lum + 16), rb.alpha * 0.16);
+      // Sheer halo, the strand at its own weight, then a crisp centre highlight.
+      // Broad strands stay translucent and fine ones dense — that inverse
+      // coupling is what gives the depth — while the highlight is what actually
+      // reads as sharpness: a defined bright line down each strand's middle,
+      // rather than relying on the strand's own soft edges.
+      rc.lineWidth   = rb.thick * 1.5;
+      rc.strokeStyle = hsla(rb.hue, rb.sat, Math.min(90, rb.lum + 16), rb.alpha * 0.10);
       rc.stroke();
       rc.lineWidth   = rb.thick;
       rc.strokeStyle = hsla(rb.hue, rb.sat, rb.lum, rb.alpha);
+      rc.stroke();
+      rc.lineWidth   = Math.max(0.75 * scale, rb.thick * 0.34);
+      rc.strokeStyle = hsla(rb.hue, Math.max(0, rb.sat - 10), Math.min(96, rb.lum + 24), Math.min(1, rb.alpha * 1.15));
       rc.stroke();
     };
     for (let r = 0; r < RN; r++) strokeRibbon(ribbons[r]);
