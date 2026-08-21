@@ -1,7 +1,7 @@
 // ─── RADIAL SPECTRUM — twin rings of light that shiver like sand on a woofer ──
 //   Two concentric rings of fine radial ticks frame a centre point. Every bit
 //   of motion — tick length, the granular jitter, the ring's breathing, the
-//   outward bloom, the dust blown radially outward — is driven by the bass
+//   outward ripple, the dust blown radially outward — is driven by the bass
 //   envelope alone, the way sand poured onto a subwoofer only answers to the
 //   low end, not the whole mix.
 
@@ -15,12 +15,11 @@ let _config = {
   jitter: 1.0,           // granular vibration strength
   tickLength: 1.0,       // scales how long/short the radial ticks are
   dust: 1.0,             // dust emission
-  bloom: 0.8,            // outward bass ripple intensity (0 = off)
+  bloom: 0.8,            // how hard the ripple bends the image (0 = off)
   bloomGap: 0.15,        // where the ripples start, out from the ray tips, as a fraction of the min dimension
-  bloomSpread: 1.0,      // how far they travel before fading out
+  bloomSpread: 1.0,      // how far the ripple field reaches
   bloomSize: 1.0,        // overall scale of the ripple field
-  bloomRings: 9,         // how many concentric ripples are in flight at once
-  bloomArcDeg: 60,       // gap at the top and bottom, in degrees (0 = unbroken circles)
+  bloomRings: 9,         // how many wavefronts are crossing the field at once
   color: "#ffffff",
   colorMode: "gradient", // "gradient" (single hue) | "colorful" (hue around the ring)
   opacity: 1.0,
@@ -119,6 +118,58 @@ export function renderRadialSpectrum(ctx, w, h, t, bands) {
   const jit    = _config.jitter;
   const lenMul = _config.tickLength;
 
+  // Where the outer ring's tips typically sit (its per-tick jitter/flick noise
+  // averages out, so this is the deterministic part of its length) — the ripple
+  // field measures its gap from here, so it tracks the rays as they grow and
+  // shrink with the bass or with the tick-length slider.
+  const outerTipRadius = rBase * 1.19 + minDim * (0.012 + bassMag * 0.26 * 0.5) * lenMul;
+
+  /* ── ripple: the bass kneading the medium, felt as pressure rather than paint.
+     A travelling sine in radius is written as alternating light and dark bands
+     composited in soft-light, which is how a rippled surface actually reads —
+     crests catch light, troughs fall into shadow. Because soft-light only
+     modulates what is already there, the effect adds no colour of its own and
+     stays transparent, yet the scene visibly breathes with the low end.
+
+     This started out as true refraction (re-blitting the frame through annuli
+     scaled a hair in or out). It looked right but cost 135ms/frame at 720p:
+     the annulus clip alone was 107ms for 27 bands, and a circular clip is
+     inherently ~15x a rectangular one in canvas 2D, so painter-order circle
+     clips (78ms) and a half-res buffer (39ms) were still far past the 33ms
+     budget. This does the same job with one gradient fill.
+
+     Runs on the real canvas BEFORE the ticks, so it works the background,
+     bokeh and logo, and leaves the rays crisp on top.                        */
+  const bloom = _config.bloom;
+  if (bloom > 0.01) {
+    const r0     = (outerTipRadius + _config.bloomGap * minDim) * _config.bloomSize;
+    const fieldW = Math.max(minDim * 0.04, _config.bloomSpread * minDim * 0.42 * _config.bloomSize);
+    const amp    = Math.min(0.95, bloom * (0.06 + _bass * 0.80 + kick * 0.85));
+
+    if (amp > 0.01) {
+      // the wave keeps rolling outward; the bass drives how fast
+      _ripple = (_ripple + (0.05 + _bass * 0.20 + kick * 0.55) * (dt / 1000)) % 1;
+
+      const cycles = Math.max(1, Math.round(_config.bloomRings));
+      const STOPS  = Math.min(72, Math.max(24, cycles * 6));   // enough to resolve every crest
+      const g = ctx.createRadialGradient(cx, cy, Math.max(0.01, r0), cx, cy, r0 + fieldW);
+      for (let i = 0; i <= STOPS; i++) {
+        const f = i / STOPS;
+        // fade the wave in and out across the field so it has no hard edges
+        const v = Math.sin(f * Math.PI) * Math.sin(f * cycles * TAU - _ripple * TAU);
+        const a = Math.abs(v) * amp;
+        g.addColorStop(f, v >= 0 ? `rgba(255,255,255,${a})` : `rgba(0,0,0,${a})`);
+      }
+      ctx.save();
+      ctx.globalCompositeOperation = "soft-light";
+      ctx.fillStyle = g;
+      // inside r0 the gradient holds stop 0, which is fully transparent, so a
+      // plain disc is safe and cheaper than carving out an annulus
+      ctx.beginPath(); ctx.arc(cx, cy, r0 + fieldW, 0, TAU); ctx.fill();
+      ctx.restore();
+    }
+  }
+
   // Hundreds of radial strokes whose width scales with the frame is pure fill,
   // so past ~2200px draw into a downscaled scratch and composite up. 2200px is
   // still finer than a full-res 1080p pass, so the ticks stay sharp.
@@ -147,11 +198,6 @@ export function renderRadialSpectrum(ctx, w, h, t, bands) {
     { r: rBase,        lenK: 0.34, wid: 1.5 * scale, alpha: 0.85, lum: 92, every: 1, seed: 0 },
     { r: rBase * 1.19, lenK: 0.26, wid: 1.1 * scale, alpha: 0.45, lum: 84, every: 1, seed: 500 },
   ];
-  // where the outer ring's tips typically sit (its per-tick jitter/flick noise
-  // averages out, so this is the deterministic part of its length) — the flare
-  // measures its gap from here, so it tracks the rays as they grow/shrink with
-  // the bass or with the tick-length slider instead of sitting at a fixed spot
-  const outerTipRadius = rings[1].r + minDim * (0.012 + bassMag * rings[1].lenK * 0.5) * lenMul;
 
   for (const ring of rings) {
     ctx.beginPath();
@@ -177,56 +223,6 @@ export function renderRadialSpectrum(ctx, w, h, t, bands) {
       ? hsla((time * 20 + ring.seed * 0.1) % 360, 80, ring.lum - 20, op * ring.alpha)
       : hsla(bh, bs, ring.lum, op * ring.alpha);
     ctx.stroke();
-  }
-
-  /* ── bloom: concentric ripples travelling outward, like sound leaving the
-     cone. Each ring is born at the ray tips (bloomGap out from them, so it
-     tracks the rays as they grow/shrink), travels across bloomSpread, and
-     fades in and out over that journey — so rings are always in flight at
-     staggered distances. They emanate faster and brighter with the bass and
-     surge on the kick. Broken into a left and a right arc with a gap top and
-     bottom (bloomArcDeg), each arc tapered toward its ends by a vertical
-     gradient so the lines dissolve rather than stopping dead. Unlike the ticks
-     this does not follow gapDeg.                                            */
-  const bloom = _config.bloom;
-  if (bloom > 0.01) {
-    // exactly the hue/saturation the ticks are using this frame
-    const hueDeg = Math.round(colorful ? (time * 20) % 360 : bh);
-    const satAct = Math.round(colorful ? 80 : bs);
-
-    const r0   = (outerTipRadius + _config.bloomGap * minDim) * _config.bloomSize;
-    const span = Math.max(minDim * 0.04, _config.bloomSpread * minDim * 0.42 * _config.bloomSize);
-    const baseA = Math.min(1, op * bloom * (0.14 + _bass * 0.66 + kick * 0.62));
-
-    // the ripples keep travelling outward; the bass drives how fast they go
-    _ripple = (_ripple + (0.05 + _bass * 0.18 + kick * 0.55) * (dt / 1000)) % 1;
-
-    const RN   = Math.max(2, Math.round(_config.bloomRings));
-    const half = (Math.PI - (Math.min(170, Math.max(0, _config.bloomArcDeg)) * Math.PI) / 180) / 2;
-
-    ctx.lineCap = "butt";
-    for (let i = 0; i < RN; i++) {
-      const u = ((i / RN) + _ripple) % 1;        // 0 = just born, 1 = spent
-      const a = baseA * Math.sin(u * Math.PI);   // fade in and out across the journey
-      if (a < 0.004) continue;
-      const r = r0 + u * span;
-
-      // taper both ends of each arc toward the top/bottom gap
-      const g = ctx.createLinearGradient(0, cy - r, 0, cy + r);
-      g.addColorStop(0,    hsla(hueDeg, satAct, 66, 0));
-      g.addColorStop(0.24, hsla(hueDeg, satAct, 66, a));
-      g.addColorStop(0.76, hsla(hueDeg, satAct, 66, a));
-      g.addColorStop(1,    hsla(hueDeg, satAct, 66, 0));
-      ctx.strokeStyle = g;
-      ctx.lineWidth = Math.max(0.6, (1.9 - u * 1.1) * scale);   // thins as it spreads
-
-      ctx.beginPath();
-      ctx.arc(cx, cy, r, -half, half);                          // right side
-      ctx.moveTo(cx + Math.cos(Math.PI - half) * r, cy + Math.sin(Math.PI - half) * r);
-      ctx.arc(cx, cy, r, Math.PI - half, Math.PI + half);       // left side
-      ctx.stroke();
-    }
-    ctx.lineCap = "round";
   }
 
   /* ── dust blown off the ring on every kick ── */
