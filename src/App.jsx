@@ -141,6 +141,8 @@ export default function App() {
   const [radialBloomGap, setRadialBloomGap] = useState(0.15);
   const [radialBloomSpread, setRadialBloomSpread] = useState(1.0);
   const [radialBloomSize, setRadialBloomSize] = useState(1.0);
+  const [radialBloomRings, setRadialBloomRings] = useState(9);
+  const [radialBloomArcDeg, setRadialBloomArcDeg] = useState(60);
   const [radialColor, setRadialColor] = useState("#ffffff");
   const [radialColorMode, setRadialColorMode] = useState("gradient");
   const [radialOpacity, setRadialOpacity] = useState(1.0);
@@ -181,8 +183,9 @@ export default function App() {
     setRadialConfig({ cx: radialCX, cy: radialCY, radius: radialRadius, gapDeg: radialGapDeg,
       ticks: radialTicks, jitter: radialJitter, tickLength: radialTickLength, dust: radialDust,
       bloom: radialBloom, bloomGap: radialBloomGap, bloomSpread: radialBloomSpread, bloomSize: radialBloomSize,
+      bloomRings: radialBloomRings, bloomArcDeg: radialBloomArcDeg,
       color: radialColor, colorMode: radialColorMode, opacity: radialOpacity });
-  }, [radialCX, radialCY, radialRadius, radialGapDeg, radialTicks, radialJitter, radialTickLength, radialDust, radialBloom, radialBloomGap, radialBloomSpread, radialBloomSize, radialColor, radialColorMode, radialOpacity]);
+  }, [radialCX, radialCY, radialRadius, radialGapDeg, radialTicks, radialJitter, radialTickLength, radialDust, radialBloom, radialBloomGap, radialBloomSpread, radialBloomSize, radialBloomRings, radialBloomArcDeg, radialColor, radialColorMode, radialOpacity]);
 
   // YouTube chapter list — track start times across all loops
   const youtubeChapters = useMemo(() => {
@@ -1051,7 +1054,7 @@ export default function App() {
                       style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
 
                     <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>
-                      แสงเบสฟุ้ง ({Math.round(radialBloom * 100)}%{radialBloom < 0.01 ? " — ปิด" : ""})
+                      คลื่นเบสแผ่ออก ({Math.round(radialBloom * 100)}%{radialBloom < 0.01 ? " — ปิด" : ""})
                     </label>
                     <input type="range" min={0} max={200} value={Math.round(radialBloom * 100)}
                       onChange={e => setRadialBloom(Number(e.target.value) / 100)}
@@ -1065,14 +1068,28 @@ export default function App() {
                       style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
 
                     <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>
-                      ระยะฟุ้งกระจาย ({Math.round(radialBloomSpread * 100)}%)
+                      ระยะที่คลื่นเดินทาง ({Math.round(radialBloomSpread * 100)}%)
                     </label>
                     <input type="range" min={20} max={250} value={Math.round(radialBloomSpread * 100)}
                       onChange={e => setRadialBloomSpread(Number(e.target.value) / 100)}
                       style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
 
                     <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>
-                      ขนาดแสงเบส ({Math.round(radialBloomSize * 100)}%)
+                      จำนวนวงคลื่น ({radialBloomRings})
+                    </label>
+                    <input type="range" min={2} max={26} value={radialBloomRings}
+                      onChange={e => setRadialBloomRings(Number(e.target.value))}
+                      style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
+
+                    <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>
+                      ช่องเปิดบน–ล่าง ({radialBloomArcDeg}°{radialBloomArcDeg === 0 ? " — วงเต็ม" : ""})
+                    </label>
+                    <input type="range" min={0} max={150} value={radialBloomArcDeg}
+                      onChange={e => setRadialBloomArcDeg(Number(e.target.value))}
+                      style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
+
+                    <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>
+                      ขนาดคลื่นเบส ({Math.round(radialBloomSize * 100)}%)
                     </label>
                     <input type="range" min={40} max={220} value={Math.round(radialBloomSize * 100)}
                       onChange={e => setRadialBloomSize(Number(e.target.value) / 100)}

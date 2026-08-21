@@ -15,10 +15,12 @@ let _config = {
   jitter: 1.0,           // granular vibration strength
   tickLength: 1.0,       // scales how long/short the radial ticks are
   dust: 1.0,             // dust emission
-  bloom: 0.8,            // outward bass bloom intensity (0 = off)
-  bloomGap: 0.15,        // where it starts, out from the ray tips, as a fraction of the min dimension
-  bloomSpread: 1.0,      // how far it keeps fading outward
-  bloomSize: 1.0,        // overall scale of the bloom
+  bloom: 0.8,            // outward bass ripple intensity (0 = off)
+  bloomGap: 0.15,        // where the ripples start, out from the ray tips, as a fraction of the min dimension
+  bloomSpread: 1.0,      // how far they travel before fading out
+  bloomSize: 1.0,        // overall scale of the ripple field
+  bloomRings: 9,         // how many concentric ripples are in flight at once
+  bloomArcDeg: 60,       // gap at the top and bottom, in degrees (0 = unbroken circles)
   color: "#ffffff",
   colorMode: "gradient", // "gradient" (single hue) | "colorful" (hue around the ring)
   opacity: 1.0,
@@ -26,6 +28,7 @@ let _config = {
 
 let _bass    = 0;      // smoothed bass
 let _bassRef = 0;      // slow follower — the gap between them is the kick
+let _ripple  = 0;      // 0..1 travel phase of the outward ripples
 let _dust    = [];
 let _sprite  = null;
 let _lastT   = 0;
@@ -34,7 +37,7 @@ let _scratch = null, _scratchCtx = null;   // used to cap fill on very large fra
 export function setRadialConfig(cfg) { Object.assign(_config, cfg); }
 export function getRadialConfig()    { return { ..._config }; }
 export function resetRadialSpectrum() {
-  _bass = 0; _bassRef = 0; _dust = []; _lastT = 0;
+  _bass = 0; _bassRef = 0; _ripple = 0; _dust = []; _lastT = 0;
 }
 
 /* ── colour ─────────────────────────────────────────────────────────────── */
@@ -176,38 +179,54 @@ export function renderRadialSpectrum(ctx, w, h, t, bands) {
     ctx.stroke();
   }
 
-  /* ── bloom: the picked colour fading outward, like the pressure the bass
-     pushes off the cone. Always a full circle — unlike the ticks it does not
-     follow gapDeg. It starts bloomGap out from the ray tips (so it tracks them
-     as they grow/shrink with the bass or the tick-length slider), fades over
-     bloomSpread, and is scaled as a whole by bloomSize. The wave itself pushes
-     further out and brightens with the bass, so it is close to invisible at
-     rest and surges on the kick.                                            */
+  /* ── bloom: concentric ripples travelling outward, like sound leaving the
+     cone. Each ring is born at the ray tips (bloomGap out from them, so it
+     tracks the rays as they grow/shrink), travels across bloomSpread, and
+     fades in and out over that journey — so rings are always in flight at
+     staggered distances. They emanate faster and brighter with the bass and
+     surge on the kick. Broken into a left and a right arc with a gap top and
+     bottom (bloomArcDeg), each arc tapered toward its ends by a vertical
+     gradient so the lines dissolve rather than stopping dead. Unlike the ticks
+     this does not follow gapDeg.                                            */
   const bloom = _config.bloom;
   if (bloom > 0.01) {
     // exactly the hue/saturation the ticks are using this frame
     const hueDeg = Math.round(colorful ? (time * 20) % 360 : bh);
     const satAct = Math.round(colorful ? 80 : bs);
 
-    const push = 1 + _bass * 0.25 + kick * 0.55;          // the cone's excursion
     const r0   = (outerTipRadius + _config.bloomGap * minDim) * _config.bloomSize;
-    const r1   = r0 + Math.max(minDim * 0.02, _config.bloomSpread * minDim * 0.30 * _config.bloomSize * push);
-    const rIn  = Math.max(0.01, r0 * 0.72);               // soft inner ramp, no hard edge
-    const a    = Math.min(1, op * bloom * (0.10 + _bass * 0.62 + kick * 0.60));
+    const span = Math.max(minDim * 0.04, _config.bloomSpread * minDim * 0.42 * _config.bloomSize);
+    const baseA = Math.min(1, op * bloom * (0.14 + _bass * 0.66 + kick * 0.62));
 
-    // peak sits where the bloom starts; rIn < r0 < r1 keeps this inside (0,1)
-    const peak = Math.max(0.001, Math.min(0.999, (r0 - rIn) / (r1 - rIn)));
-    const g = ctx.createRadialGradient(cx, cy, rIn, cx, cy, r1);
-    g.addColorStop(0,    hsla(hueDeg, satAct, 62, 0));
-    g.addColorStop(peak, hsla(hueDeg, satAct, 62, a));
-    g.addColorStop(1,    hsla(hueDeg, satAct, 62, 0));
-    ctx.fillStyle = g;
-    // annulus only — inside rIn the gradient is fully transparent anyway, so
-    // skipping it keeps a large fill off the middle of the frame
-    ctx.beginPath();
-    ctx.arc(cx, cy, r1, 0, TAU);
-    ctx.arc(cx, cy, rIn, 0, TAU, true);
-    ctx.fill();
+    // the ripples keep travelling outward; the bass drives how fast they go
+    _ripple = (_ripple + (0.05 + _bass * 0.18 + kick * 0.55) * (dt / 1000)) % 1;
+
+    const RN   = Math.max(2, Math.round(_config.bloomRings));
+    const half = (Math.PI - (Math.min(170, Math.max(0, _config.bloomArcDeg)) * Math.PI) / 180) / 2;
+
+    ctx.lineCap = "butt";
+    for (let i = 0; i < RN; i++) {
+      const u = ((i / RN) + _ripple) % 1;        // 0 = just born, 1 = spent
+      const a = baseA * Math.sin(u * Math.PI);   // fade in and out across the journey
+      if (a < 0.004) continue;
+      const r = r0 + u * span;
+
+      // taper both ends of each arc toward the top/bottom gap
+      const g = ctx.createLinearGradient(0, cy - r, 0, cy + r);
+      g.addColorStop(0,    hsla(hueDeg, satAct, 66, 0));
+      g.addColorStop(0.24, hsla(hueDeg, satAct, 66, a));
+      g.addColorStop(0.76, hsla(hueDeg, satAct, 66, a));
+      g.addColorStop(1,    hsla(hueDeg, satAct, 66, 0));
+      ctx.strokeStyle = g;
+      ctx.lineWidth = Math.max(0.6, (1.9 - u * 1.1) * scale);   // thins as it spreads
+
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, -half, half);                          // right side
+      ctx.moveTo(cx + Math.cos(Math.PI - half) * r, cy + Math.sin(Math.PI - half) * r);
+      ctx.arc(cx, cy, r, Math.PI - half, Math.PI + half);       // left side
+      ctx.stroke();
+    }
+    ctx.lineCap = "round";
   }
 
   /* ── dust blown off the ring on every kick ── */
