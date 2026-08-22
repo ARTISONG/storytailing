@@ -121,6 +121,8 @@ export default function App() {
   const [bokehShape, setBokehShape] = useState("circle");
   const [bokehOpacity, setBokehOpacity] = useState(1.0);
   const [bokehDirection, setBokehDirection] = useState("down");
+  const [bokehFogHeight, setBokehFogHeight] = useState(20);
+  const [bokehRainContrast, setBokehRainContrast] = useState(100);
   const [spectrumEnabled, setSpectrumEnabled] = useState(false);
   const [spectrumStyle, setSpectrumStyle] = useState("bars");
   const [spectrumColorMode, setSpectrumColorMode] = useState("gradient");
@@ -171,8 +173,8 @@ export default function App() {
   useEffect(() => { tracksRef.current = tracks; }, [tracks]);
 
   useEffect(() => {
-    setBokehConfig({ quantity: bokehQuantity, sizeRange: bokehSizeRange, shape: bokehShape, opacity: bokehOpacity, direction: bokehDirection });
-  }, [bokehQuantity, bokehSizeRange, bokehShape, bokehOpacity, bokehDirection]);
+    setBokehConfig({ quantity: bokehQuantity, sizeRange: bokehSizeRange, shape: bokehShape, opacity: bokehOpacity, direction: bokehDirection, fogHeight: bokehFogHeight, rainContrast: bokehRainContrast });
+  }, [bokehQuantity, bokehSizeRange, bokehShape, bokehOpacity, bokehDirection, bokehFogHeight, bokehRainContrast]);
 
   useEffect(() => {
     setSpectrumConfig({ style: spectrumStyle, colorMode: spectrumColorMode, color: spectrumColor, height: spectrumHeight, opacity: spectrumOpacity, yOffset: spectrumYOffset });
@@ -846,6 +848,24 @@ export default function App() {
                         }}>{label}</button>
                       ))}
                     </div>
+
+                    {bokehShape === "raindrop" && (
+                      <>
+                        <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>
+                          พื้นที่หมอกพื้น ({bokehFogHeight}%)
+                        </label>
+                        <input type="range" min={2} max={60} value={bokehFogHeight}
+                          onChange={e => setBokehFogHeight(Number(e.target.value))}
+                          style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
+
+                        <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>
+                          คมชัดขอบหยด — เห็นชัดบนพื้นหลังสว่าง ({bokehRainContrast}%)
+                        </label>
+                        <input type="range" min={0} max={200} value={bokehRainContrast}
+                          onChange={e => setBokehRainContrast(Number(e.target.value))}
+                          style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
+                      </>
+                    )}
                   </div>
                 </div>
               )}
