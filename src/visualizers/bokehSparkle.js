@@ -286,30 +286,73 @@ function buildBubbleSprite() {
   _sprites.bubble = oc;
 }
 
-/* ── Rain streak sprite — soft vertical motion-blur bar ──────────────────────
-   Baked once so the per-frame path is a single drawImage per drop (no
-   per-frame gradients). Transparent at the top (tail) → bright at the bottom
-   (leading head). A wide faint halo under a crisp core gives soft edges.     */
-function buildRainSprite() {
-  if (_sprites.rain) return;
-  const W = 64, H = 256;
-  const oc = new OffscreenCanvas(W, H);
-  const c  = oc.getContext("2d");
-  const grad = (a) => {
-    const g = c.createLinearGradient(0, 0, 0, H);
-    g.addColorStop(0,    "rgba(206,228,255,0)");            // tail — fades out
-    g.addColorStop(0.5,  `rgba(206,228,255,${0.06 * a})`);
-    g.addColorStop(0.85, `rgba(222,238,255,${0.55 * a})`);
-    g.addColorStop(1,    `rgba(242,249,255,${0.95 * a})`);  // head — bright
-    return g;
-  };
-  // wide, faint halo → soft horizontal falloff
-  c.fillStyle = grad(0.4);
-  const bw1 = W * 0.5;  c.fillRect((W - bw1) / 2, 0, bw1, H);
-  // crisp bright core
-  c.fillStyle = grad(1);
-  const bw2 = W * 0.18; c.fillRect((W - bw2) / 2, 0, bw2, H);
-  _sprites.rain = oc;
+/* ── Rain streak sprites — physically-informed lens streak ───────────────────
+   A falling drop acts as a tiny cylindrical lens: light grazing its edge
+   reflects far more than light passing near its centre (Fresnel effect —
+   reflectance rises sharply at grazing angles). We approximate that with
+   Schlick's approximation  R(θ) = R0 + (1−R0)(1−cosθ)^5 , using the drop's
+   cross-section position as a stand-in for the incidence angle. That gives
+   a bright rim + a tight hot core down the middle — a believable "wet
+   glass" streak instead of a flat blurred bar.
+
+   To stay visible against bright, colourful backgrounds (the "screen" blend
+   used for the core alone would vanish on white), a second, wider, DARK
+   sprite is drawn first with normal (source-over) blending — like the drop
+   bending light away from the camera and darkening what's behind it. The
+   two together read as a glassy streak on any background, bright or dark.
+   Both are pre-baked pixel-by-pixel once and reused via drawImage.         */
+function buildRainSprites() {
+  if (_sprites.rainCore) return;
+  const W = 96, H = 256;
+  const R0 = 0.04;   // base reflectance for water (n≈1.33): ((1−1.33)/(1+1.33))² ≈ 0.02, nudged up for a visible sheen
+
+  // ── Core: bright Fresnel-rim + hot centre streak (screen blend) ──────────
+  {
+    const oc  = new OffscreenCanvas(W, H);
+    const c   = oc.getContext("2d");
+    const img = c.createImageData(W, H);
+    for (let y = 0; y < H; y++) {
+      const t = y / (H - 1);                       // 0 = tail (top) → 1 = head (bottom)
+      const envelope = Math.pow(t, 0.4);            // thin tail growing into a full head
+      for (let x = 0; x < W; x++) {
+        const nx = (x - W / 2) / (W / 2 * 0.5);     // -1..1 across the narrower core band
+        const ax = Math.abs(nx);
+        let a = 0;
+        if (ax <= 1) {
+          const cosTheta = Math.sqrt(Math.max(0, 1 - nx * nx));
+          const fresnel  = R0 + (1 - R0) * Math.pow(1 - cosTheta, 5);  // Schlick — bright at the grazing edge
+          const core     = Math.exp(-(nx * nx) / (2 * 0.22 * 0.22));    // hot specular centre line
+          a = (core * 0.85 + fresnel * 0.55) * envelope;
+        }
+        const i = (y * W + x) * 4;
+        img.data[i] = 235; img.data[i + 1] = 244; img.data[i + 2] = 255;  // cool icy-white
+        img.data[i + 3] = Math.round(Math.min(1, a) * 255);
+      }
+    }
+    c.putImageData(img, 0, 0);
+    _sprites.rainCore = oc;
+  }
+
+  // ── Shadow: soft dark refraction halo, wider than the core (normal blend) ─
+  {
+    const oc  = new OffscreenCanvas(W, H);
+    const c   = oc.getContext("2d");
+    const img = c.createImageData(W, H);
+    for (let y = 0; y < H; y++) {
+      const t = y / (H - 1);
+      const envelope = Math.pow(t, 0.5);
+      for (let x = 0; x < W; x++) {
+        const nx = (x - W / 2) / (W / 2);           // -1..1 across the full (wider) canvas
+        const g  = Math.exp(-(nx * nx) / (2 * 0.42 * 0.42));  // soft gaussian cross-section
+        const a  = g * envelope * 0.65;
+        const i = (y * W + x) * 4;
+        img.data[i] = 8; img.data[i + 1] = 14; img.data[i + 2] = 26;
+        img.data[i + 3] = Math.round(Math.min(1, a) * 255);
+      }
+    }
+    c.putImageData(img, 0, 0);
+    _sprites.rainShadow = oc;
+  }
 }
 
 /* ── Golden-dust sprites — bokeh discs (rim-lit) + 4-point glitter glint ──────
@@ -513,12 +556,15 @@ function burstStep(p, w, h, minDim, boost) {
   }
 }
 
+/* ── Rain ripples — expanding rings where drops hit the ground band ────────── */
+let _rainRipples = [];
+
 /* ── State ───────────────────────────────────────────────────────────────── */
 let _particles   = null;
 let _smoothBands = {subBass:0,bass:0,lowMid:0,mid:0,highMid:0,presence:0,brilliance:0,overall:0};
 let _beatImpulse = 0, _smoothBass = 0;
 let _prevW = 0, _prevH = 0;
-let _config = { quantity:1.0, sizeRange:1.0, shape:"circle", opacity:1.0, direction:"down" };
+let _config = { quantity:1.0, sizeRange:1.0, shape:"circle", opacity:1.0, direction:"down", fogHeight:20, rainContrast:100 };
 
 export function setBokehConfig(cfg) {
   const needReinit = (cfg.quantity  !== undefined && cfg.quantity  !== _config.quantity)
@@ -529,6 +575,8 @@ export function setBokehConfig(cfg) {
   if (cfg.shape     !== undefined) _config.shape     = cfg.shape;
   if (cfg.opacity   !== undefined) _config.opacity   = cfg.opacity;
   if (cfg.direction !== undefined) _config.direction = cfg.direction;
+  if (cfg.fogHeight !== undefined) _config.fogHeight = Math.min(60, Math.max(2, cfg.fogHeight));
+  if (cfg.rainContrast !== undefined) _config.rainContrast = Math.min(200, Math.max(0, cfg.rainContrast));
   if (needReinit) _particles = null;
 }
 export function getBokehConfig() { return {..._config}; }
@@ -645,7 +693,7 @@ function initParticles(w, h) {
 /* ── Main render ─────────────────────────────────────────────────────────── */
 export function renderBokehSparkle(ctx, w, h, t, bands) {
   if (!_particles || w!==_prevW || h!==_prevH) {
-    _particles = initParticles(w,h); _prevW=w; _prevH=h;
+    _particles = initParticles(w,h); _prevW=w; _prevH=h; _rainRipples = [];
   }
 
   const isSnow   = _config.shape==="snowflake";
@@ -655,7 +703,7 @@ export function renderBokehSparkle(ctx, w, h, t, bands) {
   const isGem    = _config.shape==="gem";
   if (isSnow)   buildSprites();        // no-op after first call
   if (isBubble) buildBubbleSprite();
-  if (isRain)   buildRainSprite();
+  if (isRain)   buildRainSprites();
   if (isGold)   buildGoldSprites();
   if (isGem)    buildGemSprites();
   if (_config.shape==="circle") buildDustSprites();
@@ -683,6 +731,45 @@ export function renderBokehSparkle(ctx, w, h, t, bands) {
 
   ctx.save();
   ctx.globalCompositeOperation = "screen";
+
+  // ── Ground fog, ripples & lightning — only for the rain shape ────────────
+  const fogFrac = _config.fogHeight/100;   // fraction of canvas height that is "ground zone"
+  if (isRain) {
+    // Soft haze along the lower band where drops land
+    const fogTop = h*(1-fogFrac);
+    const fog = ctx.createLinearGradient(0, fogTop, 0, h);
+    fog.addColorStop(0, "rgba(180,210,255,0)");
+    fog.addColorStop(1, `rgba(180,210,255,${(0.05 + _smoothBands.overall*0.05).toFixed(3)})`);
+    ctx.fillStyle = fog;
+    ctx.fillRect(0, fogTop, w, h-fogTop);
+
+    // Expanding rings where drops hit the ground band
+    _rainRipples = _rainRipples.filter(rp => {
+      rp.r += rp.grow;
+      rp.alpha *= 0.965;
+      if (rp.alpha < 0.004 || rp.r > rp.maxR) return false;
+      const wobble = 1 - rp.r/rp.maxR;
+      ctx.beginPath();
+      ctx.ellipse(rp.x, rp.y, rp.r, rp.r*0.28, 0, 0, TAU);
+      ctx.strokeStyle = `rgba(210,232,255,${rp.alpha.toFixed(3)})`;
+      ctx.lineWidth = Math.max(0.4, 1.6*wobble);
+      ctx.stroke();
+      if (rp.r > rp.maxR*0.2) {
+        ctx.beginPath();
+        ctx.ellipse(rp.x, rp.y, rp.r*0.55, rp.r*0.55*0.28, 0, 0, TAU);
+        ctx.strokeStyle = `rgba(190,220,255,${(rp.alpha*0.5).toFixed(3)})`;
+        ctx.lineWidth = 0.5;
+        ctx.stroke();
+      }
+      return true;
+    });
+
+    // Distant lightning flash on strong bass hits
+    if (bass > 0.72 && Math.random() < 0.05) {
+      ctx.fillStyle = `rgba(200,215,255,${((bass-0.72)*0.5).toFixed(3)})`;
+      ctx.fillRect(0, 0, w, h);
+    }
+  }
 
   for (let pi=0; pi<_particles.length; pi++) {
     const p = _particles[pi];
@@ -850,10 +937,29 @@ export function renderBokehSparkle(ctx, w, h, t, bands) {
       const surge  = 1 + energy*0.5 + _beatImpulse*0.22;          // downpour speeds up on beats/peaks
       const vy = p.speed*h*surge;
       const vx = vy*(wind + p.windJitter);
+      const prevY = p.y;
       p.x += vx; p.y += vy;
 
       const streak = p.length*h*(1 + energy*0.25 + _beatImpulse*0.20); // streaks stretch on the beat
-      if (p.y - streak > h) { p.y = -Math.random()*h*0.25; p.x = Math.random()*w; }
+
+      // Mid/near drops hit a perspective ground line and ripple; far drops
+      // just fall through the bottom of the frame (too distant to see land).
+      const hitsGround = p.depth > 0.32;
+      const fogTopY = h*(1-fogFrac);
+      const groundY = fogTopY + h*fogFrac*(0.1 + p.depth*0.75);   // lands within the fog band
+      if (hitsGround && prevY < groundY && p.y >= groundY) {
+        if (Math.random() < 0.08 + bass*0.30) {
+          _rainRipples.push({
+            x: p.x, y: groundY, r: 1,
+            maxR: minDim*(0.05 + p.depth*0.10),
+            grow: minDim*(0.006 + bass*0.012 + p.depth*0.010),
+            alpha: 0.16 + bass*0.24 + p.depth*0.12,
+          });
+          if (_rainRipples.length > 60) _rainRipples.shift();
+        }
+      }
+
+      if (hitsGround ? p.y >= groundY : (p.y - streak > h)) { p.y = -Math.random()*h*0.25; p.x = Math.random()*w; }
       if (p.x > w+60)      p.x -= (w+120);
       else if (p.x < -60)  p.x += (w+120);
 
@@ -861,16 +967,29 @@ export function renderBokehSparkle(ctx, w, h, t, bands) {
       if (alpha < 0.006) continue;
 
       const tw = Math.max(0.6, p.thick*minDim);
+      const contrastMul = Math.max(0, _config.rainContrast)/100;
       ctx.save();
       ctx.translate(p.x, p.y);
       ctx.rotate(Math.atan2(-vx, vy));                             // align streak to fall direction
+
+      // dark refraction halo — the drop bends light away from the camera,
+      // darkening what's behind it, so the streak stays visible on any
+      // background colour/brightness (normal blend, wider than the core)
+      if (_sprites.rainShadow && contrastMul > 0.02) {
+        const shW = tw*3.2, shH = streak*1.10;
+        ctx.globalCompositeOperation = "source-over";
+        ctx.globalAlpha = Math.min(0.85, alpha*0.95*contrastMul);
+        ctx.drawImage(_sprites.rainShadow, -shW/2, -shH, shW, shH);
+        ctx.globalCompositeOperation = "screen";
+      }
+
       // near-layer defocus halo → foreground depth-of-field
       if (p.depth > 0.8) {
         ctx.globalAlpha = alpha*0.32;
-        ctx.drawImage(_sprites.rain, -(tw*2.6)/2, -streak*1.04, tw*2.6, streak*1.04);
+        ctx.drawImage(_sprites.rainCore, -(tw*2.6)/2, -streak*1.04, tw*2.6, streak*1.04);
       }
       ctx.globalAlpha = alpha;
-      ctx.drawImage(_sprites.rain, -tw/2, -streak, tw, streak);
+      ctx.drawImage(_sprites.rainCore, -tw/2, -streak, tw, streak);
       ctx.restore();
       continue;
     }
@@ -1039,9 +1158,9 @@ export function renderBokehSparkle(ctx, w, h, t, bands) {
 }
 
 export function resetBokehSparkle() {
-  _particles=null;
+  _particles=null; _rainRipples=[];
   _smoothBands={subBass:0,bass:0,lowMid:0,mid:0,highMid:0,presence:0,brilliance:0,overall:0};
   _beatImpulse=0; _smoothBass=0; _prevW=0; _prevH=0;
   // clear sprite cache so they rebuild on next use
-  delete _sprites.dot; delete _sprites.simple; delete _sprites.crystal; delete _sprites.flake; delete _sprites.bubble; delete _sprites.dust; delete _sprites.glint; delete _sprites.rain; delete _sprites.goldBokeh; delete _sprites.goldSpark; delete _sprites.gem; delete _sprites.gemHaze; delete _sprites.gemGlint;
+  delete _sprites.dot; delete _sprites.simple; delete _sprites.crystal; delete _sprites.flake; delete _sprites.bubble; delete _sprites.dust; delete _sprites.glint; delete _sprites.rainCore; delete _sprites.rainShadow; delete _sprites.goldBokeh; delete _sprites.goldSpark; delete _sprites.gem; delete _sprites.gemHaze; delete _sprites.gemGlint;
 }
