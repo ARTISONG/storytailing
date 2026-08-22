@@ -15,11 +15,12 @@ let _config = {
   jitter: 1.0,           // granular vibration strength
   tickLength: 1.0,       // scales how long/short the radial ticks are
   dust: 1.0,             // dust emission
-  bloom: 0.8,            // how hard the ripple bends the image (0 = off)
+  bloom: 0.55,           // how hard the ripple bends the image (0 = off)
   bloomGap: 0.15,        // where the ripples start, out from the ray tips, as a fraction of the min dimension
   bloomSpread: 1.0,      // how far the ripple field reaches
   bloomSize: 1.0,        // overall scale of the ripple field
-  bloomRings: 9,         // how many wavefronts are crossing the field at once
+  bloomRings: 5,         // how many wavefronts could cross the field — most dissolve
+                          // into the decay envelope below, so only the first couple read
   color: "#ffffff",
   colorMode: "gradient", // "gradient" (single hue) | "colorful" (hue around the ring)
   opacity: 1.0,
@@ -165,7 +166,7 @@ export function renderRadialSpectrum(ctx, w, h, t, bands) {
   if (bloom > 0.01) {
     const r0     = (outerTipRadius + _config.bloomGap * minDim) * _config.bloomSize;
     const fieldW = Math.max(minDim * 0.04, _config.bloomSpread * minDim * 0.42 * _config.bloomSize);
-    const amp    = Math.min(0.95, bloom * (0.06 + _bass * 0.80 + kick * 0.85)) * _gate;
+    const amp    = Math.min(0.95, bloom * (0.05 + _bass * 0.55 + kick * 0.65)) * _gate;
 
     if (amp > 0.01) {
       // the wave keeps rolling outward; the bass drives how fast
@@ -174,12 +175,24 @@ export function renderRadialSpectrum(ctx, w, h, t, bands) {
       const cycles = Math.max(1, Math.round(_config.bloomRings));
       const STOPS  = Math.min(72, Math.max(24, cycles * 6));   // enough to resolve every crest
       const g = ctx.createRadialGradient(cx, cy, Math.max(0.01, r0), cx, cy, r0 + fieldW);
+
+      /* A real ripple loses energy as it travels: geometric spreading — the
+         same energy stretched over an ever-larger circumference — dims it
+         ∝ 1/√r, and the medium's own viscosity dims it further ∝ e^(−αr).
+         Multiplying both into the envelope means only the first wavefront
+         or two ever read clearly; the rest dissolve before they'd otherwise
+         complete a full ring, which is what actually looks tasteful instead
+         of a washing-machine pattern of N equal, evenly-spaced bands.       */
+      const damping = 2.4;                                  // e-folds per field width
       for (let i = 0; i <= STOPS; i++) {
         const f = i / STOPS;
-        // fade the wave in and out across the field so it has no hard edges
-        const v = Math.sin(f * Math.PI) * Math.sin(f * cycles * TAU - _ripple * TAU);
-        const a = Math.abs(v) * amp;
-        g.addColorStop(f, v >= 0 ? `rgba(255,255,255,${a})` : `rgba(0,0,0,${a})`);
+        const wave     = Math.sin(f * cycles * TAU - _ripple * TAU);
+        const spread   = 1 / Math.sqrt(0.15 + f * 1.6);      // geometric 1/√r falloff
+        const decay    = Math.exp(-damping * f);             // viscous damping
+        const edgeSoft = Math.pow(1 - f, 0.7);                // no hard cutoff at the far edge
+        const env = spread * decay * edgeSoft;
+        const a = Math.min(1, Math.abs(wave) * env) * amp;
+        g.addColorStop(f, wave >= 0 ? `rgba(255,255,255,${a})` : `rgba(0,0,0,${a})`);
       }
       ctx.save();
       ctx.globalCompositeOperation = "soft-light";
