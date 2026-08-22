@@ -23,11 +23,15 @@ let _config = {
   color: "#ffffff",
   colorMode: "gradient", // "gradient" (single hue) | "colorful" (hue around the ring)
   opacity: 1.0,
+  threshold: 50,         // 0-100 — how far above the bass's own recent average
+                          // ("normal") a hit must surge before the ring appears,
+                          // like a subwoofer cone that only visibly moves on hits
 };
 
 let _bass    = 0;      // smoothed bass
 let _bassRef = 0;      // slow follower — the gap between them is the kick
 let _ripple  = 0;      // 0..1 travel phase of the outward ripples
+let _gate    = 0;      // 0..1 visibility — snaps open on a kick, settles shut after
 let _dust    = [];
 let _sprite  = null;
 let _lastT   = 0;
@@ -36,7 +40,7 @@ let _scratch = null, _scratchCtx = null;   // used to cap fill on very large fra
 export function setRadialConfig(cfg) { Object.assign(_config, cfg); }
 export function getRadialConfig()    { return { ..._config }; }
 export function resetRadialSpectrum() {
-  _bass = 0; _bassRef = 0; _ripple = 0; _dust = []; _lastT = 0;
+  _bass = 0; _bassRef = 0; _ripple = 0; _gate = 0; _dust = []; _lastT = 0;
 }
 
 /* ── colour ─────────────────────────────────────────────────────────────── */
@@ -99,8 +103,25 @@ export function renderRadialSpectrum(ctx, w, h, t, bands) {
   const kick    = Math.max(0, _bass - _bassRef);       // the thump, 0..~0.5
   const bassMag = Math.min(1, Math.pow(_bass, 0.78));  // bass envelope, perceptually lifted — the single driver behind every tick's length
 
+  /* ── visibility gate — invisible through normal listening, appears only when
+     the bass surges past its own recent average by more than the threshold,
+     the way a subwoofer cone sits still until a hit is loud enough to move it.
+     Driven by `kick` (bass minus its slow follower) rather than raw bass, so
+     it reacts to "louder than usual right now" and adapts to the track instead
+     of a fixed absolute level. Fast attack (snaps open on the hit), slower
+     release (settles back down like a cone relaxing).                        */
+  const thrNorm    = Math.min(100, Math.max(0, _config.threshold)) / 100;
+  const kickCeil   = 0.5;                                    // kick's practical ceiling (see comment above)
+  const thrKick    = thrNorm * kickCeil;
+  const softness   = 0.05 + kickCeil * 0.05;
+  const gateTarget = Math.min(1, Math.max(0, (kick - thrKick) / softness));
+  _gate += (gateTarget - _gate) * (gateTarget > _gate ? 0.55 : 0.10);
+  _gate = Math.min(1, Math.max(0, _gate));
+
+  if (_gate < 0.003 && _dust.length === 0) return;   // fully quiet — nothing to draw
+
   const time     = t * 0.001;
-  const op       = _config.opacity;
+  const op       = _config.opacity * _gate;
   const colorful = _config.colorMode === "colorful";
   const [bh, bs] = hexToHsl(_config.color);
   const minDim   = Math.min(w, h);
@@ -144,7 +165,7 @@ export function renderRadialSpectrum(ctx, w, h, t, bands) {
   if (bloom > 0.01) {
     const r0     = (outerTipRadius + _config.bloomGap * minDim) * _config.bloomSize;
     const fieldW = Math.max(minDim * 0.04, _config.bloomSpread * minDim * 0.42 * _config.bloomSize);
-    const amp    = Math.min(0.95, bloom * (0.06 + _bass * 0.80 + kick * 0.85));
+    const amp    = Math.min(0.95, bloom * (0.06 + _bass * 0.80 + kick * 0.85)) * _gate;
 
     if (amp > 0.01) {
       // the wave keeps rolling outward; the bass drives how fast
@@ -229,7 +250,7 @@ export function renderRadialSpectrum(ctx, w, h, t, bands) {
   const MAX_DUST = 220;
   const emit = _config.dust;
   if (emit > 0.01) {
-    let n = (0.3 + kick * 90 * emit + _bass * 1.2 * emit) * (dt / 16);
+    let n = (0.3 + kick * 90 * emit + _bass * 1.2 * emit) * (dt / 16) * _gate;
     n = Math.floor(n) + (Math.random() < (n % 1) ? 1 : 0);
     for (let k = 0; k < n && _dust.length < MAX_DUST; k++) {
       const p = Math.random();

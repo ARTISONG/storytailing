@@ -147,6 +147,7 @@ export default function App() {
   const [radialColor, setRadialColor] = useState("#ffffff");
   const [radialColorMode, setRadialColorMode] = useState("gradient");
   const [radialOpacity, setRadialOpacity] = useState(1.0);
+  const [radialThreshold, setRadialThreshold] = useState(50);
   const [centerLogo, setCenterLogo] = useState(null);
   const [centerLogoSize, setCenterLogoSize] = useState(0.26);
   const [centerLogoOpacity, setCenterLogoOpacity] = useState(1.0);
@@ -185,8 +186,8 @@ export default function App() {
       ticks: radialTicks, jitter: radialJitter, tickLength: radialTickLength, dust: radialDust,
       bloom: radialBloom, bloomGap: radialBloomGap, bloomSpread: radialBloomSpread, bloomSize: radialBloomSize,
       bloomRings: radialBloomRings,
-      color: radialColor, colorMode: radialColorMode, opacity: radialOpacity });
-  }, [radialCX, radialCY, radialRadius, radialGapDeg, radialTicks, radialJitter, radialTickLength, radialDust, radialBloom, radialBloomGap, radialBloomSpread, radialBloomSize, radialBloomRings, radialColor, radialColorMode, radialOpacity]);
+      color: radialColor, colorMode: radialColorMode, opacity: radialOpacity, threshold: radialThreshold });
+  }, [radialCX, radialCY, radialRadius, radialGapDeg, radialTicks, radialJitter, radialTickLength, radialDust, radialBloom, radialBloomGap, radialBloomSpread, radialBloomSize, radialBloomRings, radialColor, radialColorMode, radialOpacity, radialThreshold]);
 
   // YouTube chapter list — track start times across all loops
   const youtubeChapters = useMemo(() => {
@@ -1112,6 +1113,13 @@ export default function App() {
                     </label>
                     <input type="range" min={10} max={100} value={Math.round(radialOpacity * 100)}
                       onChange={e => setRadialOpacity(Number(e.target.value) / 100)}
+                      style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
+
+                    <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>
+                      เกณฑ์เบส — โผล่เฉพาะตอนดังเกินปกติ ({radialThreshold}%)
+                    </label>
+                    <input type="range" min={0} max={100} value={radialThreshold}
+                      onChange={e => setRadialThreshold(Number(e.target.value))}
                       style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
 
                     <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6, marginTop: 10 }}>สี</label>
