@@ -104,22 +104,30 @@ export function renderRadialSpectrum(ctx, w, h, t, bands) {
   const kick    = Math.max(0, _bass - _bassRef);       // the thump, 0..~0.5
   const bassMag = Math.min(1, Math.pow(_bass, 0.78));  // bass envelope, perceptually lifted — the single driver behind every tick's length
 
-  /* ── visibility gate — invisible through normal listening, appears only when
-     the bass surges past its own recent average by more than the threshold,
-     the way a subwoofer cone sits still until a hit is loud enough to move it.
-     Driven by `kick` (bass minus its slow follower) rather than raw bass, so
-     it reacts to "louder than usual right now" and adapts to the track instead
-     of a fixed absolute level. Fast attack (snaps open on the hit), slower
-     release (settles back down like a cone relaxing).                        */
+  /* ── presence — a continuous 0-100% read of "how much louder than normal
+     right now", not a hide/show cutoff. `kick` (bass minus its own slow
+     rolling average) measures the surge; a logistic curve maps it to
+     opacity, so presence swells in and eases back along one smooth S,
+     with no threshold edge to visibly snap across. The `threshold` slider
+     sets the curve's centre (kick at the centre reads as 50% presence);
+     `sharpness` controls how tight the S is around that centre — tighter
+     than a plain linear ramp, but still asymptotic at both tails rather
+     than clamped, which is what keeps it reading as graceful instead of
+     mechanical. Practically: near silent at rest, full presence on a
+     strong surge, everything in between a smooth gradient — never a jump.
+     Driven by `kick` rather than raw bass so it adapts to the track's own
+     loudness instead of a fixed absolute level, the way a subwoofer cone
+     only visibly moves relative to how hard it's normally being driven.   */
   const thrNorm    = Math.min(100, Math.max(0, _config.threshold)) / 100;
   const kickCeil   = 0.5;                                    // kick's practical ceiling (see comment above)
-  const thrKick    = thrNorm * kickCeil;
-  const softness   = 0.05 + kickCeil * 0.05;
-  const gateTarget = Math.min(1, Math.max(0, (kick - thrKick) / softness));
+  const centre     = thrNorm * kickCeil;                     // "normal" reference point
+  const width      = 0.05 + kickCeil * 0.06;                 // transition width around the centre
+  const sharpness  = 1.7;                                    // >1 tightens the S around the centre
+  const gateTarget = 1 / (1 + Math.exp(-sharpness * (kick - centre) / width));
   _gate += (gateTarget - _gate) * (gateTarget > _gate ? 0.55 : 0.10);
   _gate = Math.min(1, Math.max(0, _gate));
 
-  if (_gate < 0.003 && _dust.length === 0) return;   // fully quiet — nothing to draw
+  if (_gate < 0.0008 && _dust.length === 0) return;   // negligible — nothing worth drawing
 
   const time     = t * 0.001;
   const op       = _config.opacity * _gate;
@@ -245,7 +253,11 @@ export function renderRadialSpectrum(ctx, w, h, t, bands) {
       const jumpy = grain(i * 3.7 + ring.seed, Math.floor(time * 13));
       const jump  = jumpy > 0.82 ? jumpy * kick * 2.4 * jit : 0;   // occasional flick
 
-      const len = minDim * (0.012 + mag * ring.lenK * 0.5 + Math.abs(gr) * 0.05 + jump * 0.05) * lenMul;
+      // No baseline floor here — the ray is 0 length at zero bass and scales
+      // straight through to its full length at bassMag===1, a direct 0-100%
+      // read of the bass envelope rather than a dampened wobble around a
+      // resting length.
+      const len = minDim * (mag * ring.lenK * 0.5 + Math.abs(gr) * 0.05 + jump * 0.05) * lenMul;
       const r0  = ring.r + gr * minDim * 0.006;
       const r1  = r0 + len;
       const ca = Math.cos(a), sa = Math.sin(a);
