@@ -55,6 +55,20 @@ const GEM_LAYERS = [
   { role:"spark", freqKeys:["brilliance"],         depthMin:0.84, depthMax:1.00, countFrac:0.35, sizeMin:0.003, sizeMax:0.010, driftMin:0.00038, driftMax:0.00092, alphaBase:0.14, alphaFreq:0.30, rotSpeed:0.0020 },
 ];
 
+/* ── Awards Dust layers — fine glittering motes for a red-carpet/award-show
+   shimmer. `role:"haze"` is a soft atmosphere behind everything; `role:"dust"`
+   is the sparkling motes themselves. Every mote's SIZE is fixed at spawn and
+   never touched again — only its glint brightness animates, driven purely by
+   a per-particle time function (see sparkleTwinkle below), not by the beat.
+   The music still nudges brightness/alpha a little, for musicality, but
+   never the geometry. */
+const AWARDS_LAYERS = [
+  { role:"haze", freqKeys:["subBass","bass"],       depthMin:0.00, depthMax:0.22, countFrac:0.08, sizeMin:0.040, sizeMax:0.090, driftMin:0.00010, driftMax:0.00024, alphaBase:0.030, alphaFreq:0.025 },
+  { role:"dust", freqKeys:["lowMid","mid"],         depthMin:0.18, depthMax:0.48, countFrac:0.26, sizeMin:0.0016, sizeMax:0.0034, driftMin:0.00014, driftMax:0.00032, alphaBase:0.16, alphaFreq:0.06 },
+  { role:"dust", freqKeys:["highMid","presence"],   depthMin:0.44, depthMax:0.76, countFrac:0.36, sizeMin:0.0026, sizeMax:0.0054, driftMin:0.00022, driftMax:0.00046, alphaBase:0.22, alphaFreq:0.08 },
+  { role:"dust", freqKeys:["brilliance"],           depthMin:0.72, depthMax:1.00, countFrac:0.30, sizeMin:0.0042, sizeMax:0.0082, driftMin:0.00032, driftMax:0.00062, alphaBase:0.28, alphaFreq:0.10 },
+];
+
 /* ── Sprite cache — built once, reused every frame ───────────────────────── */
 const SPRITE_SIZE = 256;           // px
 const _sprites = {};               // { dot, simple, crystal, flake }
@@ -526,6 +540,109 @@ function buildGemSprites() {
   }
 }
 
+/* ── Awards Dust sprites — a soft atmosphere haze, a fixed-size mote core,
+   and a multi-point diffraction glint (baked once per hue variant, then
+   scaled per-frame by the twinkle math — cheap drawImage calls, no per-
+   particle gradients). Four hues: warm gold, champagne, icy platinum, rose
+   gold — kept close enough in tone to read as one coherent "awards" palette
+   while giving the drift some visual variety.                              */
+const AWARDS_VARIANTS = 4;
+const AWARDS_HUES = [
+  [255, 214, 140],  // warm gold
+  [255, 232, 186],  // champagne
+  [232, 240, 255],  // icy platinum
+  [255, 206, 196],  // rose gold
+];
+function buildAwardsSprites() {
+  if (_sprites.awardsCore) return;
+  const rgb = (c, a) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+
+  const haze = [], core = [], glint = [];
+  for (let v = 0; v < AWARDS_VARIANTS; v++) {
+    const hue = AWARDS_HUES[v];
+
+    // atmosphere — big, soft, barely-there
+    {
+      const H = 160, hc = H / 2;
+      const oc = new OffscreenCanvas(H, H);
+      const c  = oc.getContext("2d");
+      const g  = c.createRadialGradient(hc, hc, 0, hc, hc, H * 0.5);
+      g.addColorStop(0,    rgb(hue, 0.30));
+      g.addColorStop(0.5,  rgb(hue, 0.14));
+      g.addColorStop(1,    rgb(hue, 0));
+      c.fillStyle = g;
+      c.beginPath(); c.arc(hc, hc, H * 0.5, 0, TAU); c.fill();
+      haze.push(oc);
+    }
+
+    // core — the mote's fixed-size body: a small, hot, soft-edged dot
+    {
+      const S = 96, cc = S / 2;
+      const oc = new OffscreenCanvas(S, S);
+      const c  = oc.getContext("2d");
+      const g  = c.createRadialGradient(cc, cc, 0, cc, cc, S * 0.5);
+      g.addColorStop(0,    "rgba(255,253,244,0.98)");
+      g.addColorStop(0.35, rgb(hue, 0.85));
+      g.addColorStop(0.75, rgb(hue, 0.30));
+      g.addColorStop(1,    rgb(hue, 0));
+      c.fillStyle = g;
+      c.beginPath(); c.arc(cc, cc, S * 0.5, 0, TAU); c.fill();
+      core.push(oc);
+    }
+
+    // glint — 4 long diffraction spikes + 6 short fine rays + a hot centre.
+    // This is the piece that "sparkles": drawn once, then re-scaled per
+    // particle per frame from the harmonic twinkle value.
+    {
+      const G = 160, g0 = G / 2;
+      const oc = new OffscreenCanvas(G, G);
+      const c  = oc.getContext("2d");
+      c.translate(g0, g0);
+      c.lineCap = "round";
+      // rays run hot — 70% toward white — so the hue tints them without
+      // muddying the "catching the light" brightness
+      const hot = hue.map(x => Math.round(x + (255-x)*0.7));
+      for (const [wd, a, len, n, rot] of [
+        [G*0.045, 0.20, 0.48, 4, 0],
+        [G*0.016, 0.95, 0.48, 4, 0],
+        [G*0.009, 0.40, 0.22, 6, Math.PI/6],
+      ]) {
+        c.strokeStyle = rgb(hot, a);
+        c.lineWidth   = wd;
+        c.beginPath();
+        for (let i = 0; i < n; i++) {
+          const ang = rot + (i/n) * TAU;
+          c.moveTo(0, 0); c.lineTo(Math.cos(ang)*G*len, Math.sin(ang)*G*len);
+        }
+        c.stroke();
+      }
+      const cg = c.createRadialGradient(0, 0, 0, 0, 0, G*0.16);
+      cg.addColorStop(0, "rgba(255,255,255,0.98)");
+      cg.addColorStop(1, "rgba(255,255,255,0)");
+      c.fillStyle = cg; c.beginPath(); c.arc(0, 0, G*0.16, 0, TAU); c.fill();
+      glint.push(oc);
+    }
+  }
+  _sprites.awardsHaze  = haze;
+  _sprites.awardsCore  = core;
+  _sprites.awardsGlint = glint;
+}
+
+/* Complex per-particle twinkle: three incommensurate sine harmonics summed
+   then power-curved. The sum of unrelated frequencies is what keeps any two
+   motes from ever flashing in lockstep (a single sine looks metronomic), and
+   raising the result to a power > 1 turns a smooth wobble into short, sharp
+   sparkle flashes with real "dark" time between them — much closer to how
+   light glinting off a moving facet actually looks than a plain oscillation.
+   Purely a function of time — the beat and audio bands never enter it. */
+function sparkleTwinkle(p, time) {
+  const h1 = Math.sin(time*p.f1 + p.ph1);
+  const h2 = Math.sin(time*p.f2 + p.ph2);
+  const h3 = Math.sin(time*p.f3 + p.ph3);
+  const raw = (h1 + h2*0.6 + h3*0.35) / 1.95;
+  return Math.pow(Math.max(0, raw), 2.4);
+}
+
 /* ── Generic shape functions (non-snow) ──────────────────────────────────── */
 function drawCircle(ctx,r){ctx.beginPath();ctx.arc(0,0,r,0,TAU);}
 function drawHexagon(ctx,r){ctx.beginPath();for(let i=0;i<6;i++){const a=(i/6)*TAU-Math.PI/6;i===0?ctx.moveTo(Math.cos(a)*r,Math.sin(a)*r):ctx.lineTo(Math.cos(a)*r,Math.sin(a)*r);}ctx.closePath();}
@@ -585,10 +702,11 @@ export function getBokehConfig() { return {..._config}; }
 function initParticles(w, h) {
   const isSnow = _config.shape === "snowflake";
   const isRain = _config.shape === "raindrop";
-  const isGold = _config.shape === "golddust";
-  const isGem  = _config.shape === "gem";
-  const layers = isSnow ? SNOW_LAYERS : isRain ? RAIN_LAYERS : isGold ? GOLD_LAYERS : isGem ? GEM_LAYERS : LAYER_DEFS;
-  const total  = Math.round((isRain ? 340 : isGold ? 260 : isGem ? 210 : 280) * _config.quantity);
+  const isGold   = _config.shape === "golddust";
+  const isGem    = _config.shape === "gem";
+  const isAwards = _config.shape === "awardsdust";
+  const layers = isSnow ? SNOW_LAYERS : isRain ? RAIN_LAYERS : isGold ? GOLD_LAYERS : isGem ? GEM_LAYERS : isAwards ? AWARDS_LAYERS : LAYER_DEFS;
+  const total  = Math.round((isRain ? 340 : isGold ? 260 : isGem ? 210 : isAwards ? 300 : 280) * _config.quantity);
   const dir    = _config.direction;
   const isBurst = dir === "burst" && !isRain;
   const minDim  = Math.min(w, h);
@@ -637,6 +755,31 @@ function initParticles(w, h) {
           twinkleSpeed: 1.0 + Math.random()*2.6,
           variant:      idx % GOLD_VARIANTS,
           noiseOff:     idx*2.71 + Math.random()*50,
+        });
+        continue;
+      }
+
+      if (isAwards) {
+        // baseSize is fixed here, once, and never touched again in render —
+        // that's what makes the mote's size immune to the beat.
+        const sizeT    = Math.pow(Math.random(), 1.3);
+        const baseSize = (L.sizeMin + sizeT*(L.sizeMax-L.sizeMin)) * _config.sizeRange;
+        const drift    = L.driftMin + Math.random()*(L.driftMax-L.driftMin);
+        const [gx, gy] = isBurst ? burstSpawn(w, h, minDim) : [Math.random()*w, Math.random()*h];
+        pts.push({
+          x: gx, y: gy,
+          vx0: (Math.random()-0.5)*0.00028,
+          vy0: dir==="up" ? -drift : dir==="still" ? 0 : drift,
+          baseSize, depth, layer: li, role: L.role,
+          phase:     Math.random()*TAU,
+          variant:   idx % AWARDS_VARIANTS,
+          noiseOff:  idx*2.71 + Math.random()*50,
+          rotAngle:  Math.random()*TAU,
+          rotSpeed:  0.0004*(0.4+Math.random()*1.0)*(Math.random()<0.5?1:-1),
+          // three incommensurate frequencies + phases → sparkleTwinkle()
+          f1: 0.6 + Math.random()*0.9,  ph1: Math.random()*TAU,
+          f2: 1.7 + Math.random()*1.6,  ph2: Math.random()*TAU,
+          f3: 3.1 + Math.random()*2.4,  ph3: Math.random()*TAU,
         });
         continue;
       }
@@ -701,17 +844,19 @@ export function renderBokehSparkle(ctx, w, h, t, bands) {
   const isRain   = _config.shape==="raindrop";
   const isGold   = _config.shape==="golddust";
   const isGem    = _config.shape==="gem";
+  const isAwards = _config.shape==="awardsdust";
   if (isSnow)   buildSprites();        // no-op after first call
   if (isBubble) buildBubbleSprite();
   if (isRain)   buildRainSprites();
   if (isGold)   buildGoldSprites();
   if (isGem)    buildGemSprites();
+  if (isAwards) buildAwardsSprites();
   if (_config.shape==="circle") buildDustSprites();
 
   const time   = t*0.001;
   const bass   = bands.bass||0;
   const minDim = Math.min(w,h);
-  const layers = isSnow ? SNOW_LAYERS : isRain ? RAIN_LAYERS : isGold ? GOLD_LAYERS : isGem ? GEM_LAYERS : LAYER_DEFS;
+  const layers = isSnow ? SNOW_LAYERS : isRain ? RAIN_LAYERS : isGold ? GOLD_LAYERS : isGem ? GEM_LAYERS : isAwards ? AWARDS_LAYERS : LAYER_DEFS;
   const dir    = _config.direction;
 
   for (const k of Object.keys(_smoothBands))
@@ -861,6 +1006,71 @@ export function renderBokehSparkle(ctx, w, h, t, bands) {
               ctx.globalAlpha = Math.min(0.85, a*(tilt-0.93)/0.07*0.85);
               ctx.drawImage(_sprites.gemGlint, -gd/2, -gd/2, gd, gd);
             }
+          }
+        }
+      }
+
+      ctx.restore();
+      continue;
+    }
+
+    // ── AWARDS DUST: fixed-size glittering motes, beat-immune size ──
+    if (isAwards) {
+      if (isBurst) {
+        burstStep(p, w, h, minDim, burstBoost);
+      } else {
+        // slow, elegant drift — no bass-driven speed surge, this shape stays calm
+        let dy = p.vy0*h;
+        let dx = p.vx0*h
+               + simplex.noise2D(p.noiseOff, time*0.04)*minDim*0.00018
+               + wind*minDim*0.0005*(0.3+p.depth);
+        if (dir==="still") dy = simplex.noise2D(p.noiseOff+300, time*0.03)*minDim*0.00018;
+        else                dy += simplex.noise2D(p.noiseOff+200, time*0.04)*minDim*0.00012;
+        p.x += dx; p.y += dy;
+
+        const m = p.baseSize*minDim + 20;
+        if (p.y>h+m)  { p.y=-m;  p.x=Math.random()*w; }
+        if (p.y<-m)   { p.y=h+m; p.x=Math.random()*w; }
+        if (p.x>w+m)    p.x=-m;
+        if (p.x<-m)     p.x=w+m;
+      }
+
+      // Size is locked to baseSize*minDim — no freq/beatImpulse term anywhere
+      // in this block. Only brightness (alpha) and the glint's flare length
+      // are allowed to move, and the flare is driven by sparkleTwinkle(),
+      // a pure function of time — never of the beat.
+      const r = p.baseSize*minDim;
+      if (r < 0.3) { continue; }
+      p.rotAngle += p.rotSpeed;
+
+      ctx.save();
+      ctx.translate(p.x, p.y);
+
+      if (p.role === "haze") {
+        const sprite = _sprites.awardsHaze[p.variant];
+        const tw = 0.7 + 0.3*Math.sin(time*0.3 + p.phase);
+        const a  = Math.min(0.6, (L.alphaBase + freq*L.alphaFreq) * _config.opacity * tw);
+        if (a >= 0.005 && sprite) {
+          const dim = r*2.2;
+          ctx.globalAlpha = a;
+          ctx.drawImage(sprite, -dim/2, -dim/2, dim, dim);
+        }
+      } else {
+        const twinkle = sparkleTwinkle(p, time);
+        const core   = _sprites.awardsCore[p.variant];
+        const glint  = _sprites.awardsGlint[p.variant];
+        const a = Math.min(0.95, (L.alphaBase + freq*L.alphaFreq + twinkle*0.55 + _beatImpulse*0.04) * _config.opacity);
+        if (a >= 0.008) {
+          if (core) {
+            ctx.globalAlpha = Math.min(1, a*1.1);
+            const cd = r*2;
+            ctx.drawImage(core, -cd/2, -cd/2, cd, cd);
+          }
+          if (glint && twinkle > 0.03) {
+            ctx.rotate(p.rotAngle);
+            ctx.globalAlpha = Math.min(0.95, a*twinkle*1.4);
+            const gd = r*(2.2 + twinkle*4.2);
+            ctx.drawImage(glint, -gd/2, -gd/2, gd, gd);
           }
         }
       }

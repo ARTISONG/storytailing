@@ -885,6 +885,7 @@ export default function App() {
                       {[
                         ["circle", "วงกลม", "●"],
                         ["golddust", "ผงทอง", "✨"],
+                        ["awardsdust", "ฝุ่นระยิบ", "🎇"],
                         ["gem", "อัญมณี", "💎"],
                         ["hexagon", "หกเหลี่ยม", "⬡"],
                         ["snowflake", "เกล็ดหิมะ", "❄"],
