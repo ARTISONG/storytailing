@@ -17,6 +17,17 @@
    via suspend()/resume() at each frame's exact timestamp, so the bands
    fed to the visualizers match what the live AnalyserNode would report
    at that instant — visual behaviour stays identical to the live preview.
+
+   Audio is rendered — and handed to the muxer, then closed — in full
+   BEFORE any video frame is drawn. Mediabunny's muxer won't write out
+   ANY track's data until every track has something queued (it's
+   interleaving by timestamp), so if audio only arrives as one chunk
+   after the whole video loop, every encoded video frame sits buffered
+   in memory for the entire export — for a multi-minute song at high
+   bitrate that's multiple GB, and it can hang or crash the tab before
+   ever producing a file. Feeding audio first (then closing that track)
+   lets the muxer flush video frames to the output as they're encoded,
+   instead of hoarding the whole thing.
    ═══════════════════════════════════════════════════════════ */
 import {
   Output, WebMOutputFormat, BufferTarget,
@@ -72,6 +83,42 @@ export async function exportFrameLocked({
   }
 
   const totalFrames = Math.max(1, Math.ceil(totalDuration * fps));
+
+  // ─── Pass 1: render audio offline, capturing the AnalyserNode's bands at
+  // each frame's exact timestamp along the way — nothing is drawn yet.
+  const bandsPerFrame = new Array(totalFrames);
+  let rendered = null;
+  if (hasAudio) {
+    // suspend() must be scheduled *before* the render thread is let loose via
+    // resume(), or it free-runs to the end of the buffer before our next JS
+    // tick gets a chance to register the following suspend point. So the next
+    // suspend is always queued up first, and only then do we resume from the
+    // current one.
+    const suspendTimeFor = (i) => Math.max(i / fps, 0.0001);
+    let pendingSuspend = offlineCtx.suspend(suspendTimeFor(0));
+    const renderedBufferPromise = offlineCtx.startRendering();
+
+    for (let i = 0; i < totalFrames; i++) {
+      if (shouldAbort && shouldAbort()) throw new DOMException("Export aborted", "AbortError");
+      // Waits for the render to reach this frame's timestamp so the
+      // analyser reflects that exact instant, then reads it before resuming.
+      await pendingSuspend;
+      bandsPerFrame[i] = analyzeBands(mixer.analyser, sampleRate);
+      if (i + 1 < totalFrames) pendingSuspend = offlineCtx.suspend(suspendTimeFor(i + 1));
+      offlineCtx.resume();
+      if (i % 50 === 0) await new Promise((r) => setTimeout(r, 0));
+    }
+
+    rendered = await renderedBufferPromise;
+  } else {
+    for (let i = 0; i < totalFrames; i++) bandsPerFrame[i] = analyzeBands(null, sampleRate);
+  }
+
+  // ─── Pass 2: draw + encode each video frame. Audio is hooked up first and
+  // its track closed immediately, so the muxer can interleave and flush
+  // video frames to the output as they're encoded instead of buffering the
+  // entire video in memory while it waits for audio that isn't coming until
+  // the very end (see file header).
   const canvas = new OffscreenCanvas(width, height);
   const ctx = canvas.getContext("2d");
 
@@ -89,14 +136,15 @@ export async function exportFrameLocked({
 
   await output.start();
 
-  // suspend() must be scheduled *before* the render thread is let loose via
-  // resume(), or it free-runs to the end of the buffer before our next JS
-  // tick gets a chance to register the following suspend point. So the next
-  // suspend is always queued up first, and only then do we resume from the
-  // current one.
-  const suspendTimeFor = (i) => Math.max(i / fps, 0.0001);
-  let pendingSuspend = hasAudio ? offlineCtx.suspend(suspendTimeFor(0)) : null;
-  const renderedBufferPromise = hasAudio ? offlineCtx.startRendering() : null;
+  if (hasAudio) {
+    const exactSamples = Math.min(rendered.length, Math.round(totalDuration * sampleRate));
+    const trimmed = new AudioBuffer({ length: exactSamples, sampleRate, numberOfChannels: rendered.numberOfChannels });
+    for (let c = 0; c < rendered.numberOfChannels; c++) {
+      trimmed.copyToChannel(rendered.getChannelData(c).subarray(0, exactSamples), c);
+    }
+    await audioSource.add(trimmed);
+    audioSource.close();
+  }
 
   for (let i = 0; i < totalFrames; i++) {
     if (shouldAbort && shouldAbort()) {
@@ -105,37 +153,13 @@ export async function exportFrameLocked({
     }
 
     const t = i / fps;
-    let bands;
-    if (hasAudio) {
-      // Waits for the render to reach this frame's timestamp so the
-      // analyser reflects that exact instant, then reads it before resuming.
-      await pendingSuspend;
-      bands = analyzeBands(mixer.analyser, sampleRate);
-    } else {
-      bands = analyzeBands(null, sampleRate);
-    }
-
-    await drawFrame(ctx, { elapsed: t * 1000, playhead: t, bands, mixer, frameIndex: i, totalFrames, totalDuration });
+    await drawFrame(ctx, { elapsed: t * 1000, playhead: t, bands: bandsPerFrame[i], mixer, frameIndex: i, totalFrames, totalDuration });
     await videoSource.add(t, 1 / fps);
 
-    if (hasAudio) {
-      if (i + 1 < totalFrames) pendingSuspend = offlineCtx.suspend(suspendTimeFor(i + 1));
-      offlineCtx.resume();
-    }
     if (onProgress) onProgress((i + 1) / totalFrames);
 
     // Yield to the event loop periodically so the UI (progress %) can repaint.
     if (i % 10 === 0) await new Promise((r) => setTimeout(r, 0));
-  }
-
-  if (hasAudio) {
-    const rendered = await renderedBufferPromise;
-    const exactSamples = Math.min(rendered.length, Math.round(totalDuration * sampleRate));
-    const trimmed = new AudioBuffer({ length: exactSamples, sampleRate, numberOfChannels: rendered.numberOfChannels });
-    for (let c = 0; c < rendered.numberOfChannels; c++) {
-      trimmed.copyToChannel(rendered.getChannelData(c).subarray(0, exactSamples), c);
-    }
-    await audioSource.add(trimmed);
   }
 
   await output.finalize();
