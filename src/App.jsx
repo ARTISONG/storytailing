@@ -5,6 +5,7 @@ import { renderSongTitle } from "./visualizers/songTitle.js";
 import { renderBokehSparkle, setBokehConfig } from "./visualizers/bokehSparkle.js";
 import { renderAudioSpectrum, setSpectrumConfig } from "./visualizers/audioSpectrum.js";
 import { renderRadialSpectrum, setRadialConfig } from "./visualizers/radialSpectrum.js";
+import { isFrameLockedExportSupported, exportFrameLocked } from "./utils/frameLockedExport.js";
 
 /* ═══════════════════════════════════════════════════════════
    DOWNLOAD HELPER
@@ -166,6 +167,9 @@ export default function App() {
   const startTRef = useRef(0);
   const exportTimerRef = useRef(null);
   const downloadBlobRef = useRef(null);
+  const frameTimeEMARef = useRef(8);   // rolling avg preview draw cost (ms)
+  const lowFpsModeRef = useRef(false); // true → drawing every other frame
+  const exportAbortRef = useRef(false);
 
   const RES = { "720p": [1280, 720], "1080p": [1920, 1080], "1440p": [2560, 1440], "4K": [3840, 2160] };
   const BITRATE = { "720p": 8_000_000, "1080p": 20_000_000, "1440p": 40_000_000, "4K": 80_000_000 };
@@ -230,6 +234,7 @@ export default function App() {
 
   const stopAll = useCallback(() => {
     stopPreviewOnly();
+    exportAbortRef.current = true;
     setExporting(false);
   }, [stopPreviewOnly]);
 
@@ -312,6 +317,7 @@ export default function App() {
     }
 
     startTRef.current = 0; let fc = 0;
+    frameTimeEMARef.current = 8; lowFpsModeRef.current = false;
     const loop = (ts) => {
       if (!startTRef.current) startTRef.current = ts;
       const elapsed = ts - startTRef.current;
@@ -319,30 +325,46 @@ export default function App() {
       const bands = analyzeBands(analyser, sampleRate);
       if (fc % 3 === 0) setBandLevels(bands);
 
-      // Background image
-      const mixer = mixerRef.current;
-      let playhead = 0;
-      if (mixer && audioCtxRef.current) playhead = audioCtxRef.current.currentTime - mixer.mixStart;
-      const bg = getBgForPlayhead(mixer, playhead);
-      if (bg.prog < 1) drawBgTransition(ctx, cw, ch, bg.prevImg, bg.img, bg.prog, bgTransition);
-      else drawBg(ctx, cw, ch, bg.img);
+      // Stacking several effects (bokeh + radial + spectrum, etc.) can push a
+      // single frame's canvas work past the 16ms budget, which reads as
+      // stutter. Rather than fight for a jittery 45-60fps, measure the
+      // actual draw cost and — once it's too heavy — settle into a steady
+      // half-rate (draw every other frame, canvas just holds the previous
+      // frame in between). A stable 30fps looks smoother than an erratic one.
+      const draw = !lowFpsModeRef.current || (fc % 2 === 0);
+      if (draw) {
+        const drawStart = performance.now();
 
-      // Bokeh
-      if (bokehEnabled) renderBokehSparkle(ctx, cw, ch, elapsed, bands);
+        // Background image
+        const mixer = mixerRef.current;
+        let playhead = 0;
+        if (mixer && audioCtxRef.current) playhead = audioCtxRef.current.currentTime - mixer.mixStart;
+        const bg = getBgForPlayhead(mixer, playhead);
+        if (bg.prog < 1) drawBgTransition(ctx, cw, ch, bg.prevImg, bg.img, bg.prog, bgTransition);
+        else drawBg(ctx, cw, ch, bg.img);
 
-      // Centre logo + radial ring
-      drawCenterPiece(ctx, cw, ch, elapsed, bands);
+        // Bokeh
+        if (bokehEnabled) renderBokehSparkle(ctx, cw, ch, elapsed, bands);
 
-      // Audio equalizer spectrum (bottom of frame)
-      if (spectrumEnabled) renderAudioSpectrum(ctx, cw, ch, elapsed, bands);
+        // Centre logo + radial ring
+        drawCenterPiece(ctx, cw, ch, elapsed, bands);
 
-      // Title
-      let line1 = songTitle || audioName;
-      if (titleMode === "dynamic" && mixer) {
-        const cur = currentTrack(mixer.schedule, playhead);
-        if (cur) line1 = cur.name || line1;
+        // Audio equalizer spectrum (bottom of frame)
+        if (spectrumEnabled) renderAudioSpectrum(ctx, cw, ch, elapsed, bands);
+
+        // Title
+        let line1 = songTitle || audioName;
+        if (titleMode === "dynamic" && mixer) {
+          const cur = currentTrack(mixer.schedule, playhead);
+          if (cur) line1 = cur.name || line1;
+        }
+        if (showTitle) renderSongTitle(ctx, cw, ch, line1, songTitle2, bands, elapsed, titlePos, titleFontSize, titleFontSize2);
+
+        const drawMs = performance.now() - drawStart;
+        frameTimeEMARef.current += (drawMs - frameTimeEMARef.current) * 0.1;
+        if (!lowFpsModeRef.current && frameTimeEMARef.current > 20) lowFpsModeRef.current = true;
+        else if (lowFpsModeRef.current && frameTimeEMARef.current < 8) lowFpsModeRef.current = false;
       }
-      if (showTitle) renderSongTitle(ctx, cw, ch, line1, songTitle2, bands, elapsed, titlePos, titleFontSize, titleFontSize2);
 
       fc++; animRef.current = requestAnimationFrame(loop);
     };
@@ -407,7 +429,99 @@ export default function App() {
     img.src = URL.createObjectURL(file);
   }, []);
 
-  const handleExport = useCallback(async () => {
+  // One full frame's worth of drawing — shared by both export paths.
+  // ctx/cw/ch is whatever canvas is being encoded; elapsed/playhead/bands/
+  // mixer/totalMs describe the instant being rendered.
+  const drawExportFrame = useCallback((ctx, cw, ch, elapsed, playhead, bands, mixer, totalMs) => {
+    const bg = getBgForPlayhead(mixer, playhead);
+    if (bg.prog < 1) drawBgTransition(ctx, cw, ch, bg.prevImg, bg.img, bg.prog, bgTransition);
+    else drawBg(ctx, cw, ch, bg.img);
+
+    if (bokehEnabled) renderBokehSparkle(ctx, cw, ch, elapsed, bands);
+    drawCenterPiece(ctx, cw, ch, elapsed, bands);
+    if (spectrumEnabled) renderAudioSpectrum(ctx, cw, ch, elapsed, bands);
+
+    let expLine1 = songTitle || audioName;
+    if (titleMode === "dynamic" && mixer) {
+      const cur = currentTrack(mixer.schedule, playhead);
+      if (cur) expLine1 = cur.name || expLine1;
+    }
+    if (showTitle) renderSongTitle(ctx, cw, ch, expLine1, songTitle2, bands, elapsed, titlePos, titleFontSize, titleFontSize2);
+
+    const fadeMs = 15000;
+    const remaining = totalMs - elapsed;
+    if (remaining < fadeMs) {
+      const fadeAlpha = 1 - (remaining / fadeMs);
+      ctx.fillStyle = `rgba(0,0,0,${fadeAlpha})`;
+      ctx.fillRect(0, 0, cw, ch);
+      if (endLogo && remaining < fadeMs * 0.67) {
+        const logoFadeIn = 1 - (remaining / (fadeMs * 0.67));
+        const logoAlpha = Math.min(1, logoFadeIn * 2) * (1 - Math.max(0, logoFadeIn - 0.7) / 0.3);
+        const maxLogoH = ch * 0.2;
+        const logoScale = Math.min(maxLogoH / endLogo.height, (cw * 0.3) / endLogo.width);
+        const logoW = endLogo.width * logoScale, logoH = endLogo.height * logoScale;
+        ctx.globalAlpha = logoAlpha * 0.9;
+        ctx.drawImage(endLogo, (cw - logoW) / 2, (ch - logoH) / 2, logoW, logoH);
+        ctx.globalAlpha = 1;
+      }
+    }
+  }, [getBgForPlayhead, bgTransition, bokehEnabled, drawCenterPiece, spectrumEnabled, songTitle, audioName, titleMode, showTitle, songTitle2, titlePos, titleFontSize, titleFontSize2, endLogo]);
+
+  // Frame-locked export (WebCodecs/Mediabunny) — draws + encodes each frame
+  // at a fixed timestep, decoupled from wall-clock speed. See
+  // src/utils/frameLockedExport.js for why this replaces MediaRecorder.
+  const handleExportFrameLocked = useCallback(async () => {
+    setExporting(true); setExportProg(0); stopPreviewOnly();
+    exportAbortRef.current = false;
+    try {
+      const [cw, ch] = RES[resolution];
+      const readyTracks = tracks.filter(t => t.buffer);
+      const repeated = [];
+      for (let r = 0; r < loops; r++) repeated.push(...readyTracks);
+      const singleLen = readyTracks.length
+        ? readyTracks.reduce((s, t) => s + t.buffer.duration, 0) - crossfadeSec * (readyTracks.length - 1)
+        : 60;
+      const fallbackDuration = singleLen * loops;
+
+      const visCanvas = canvasRef.current;
+      const visCtx = visCanvas ? visCanvas.getContext("2d") : null;
+      if (visCanvas) { visCanvas.width = cw; visCanvas.height = ch; }
+      let lastPreviewUpdate = 0;
+
+      const { blob } = await exportFrameLocked({
+        width: cw, height: ch, fps: 30,
+        tracks: repeated, crossfade: crossfadeSec, fallbackDuration,
+        videoBitrate: BITRATE[resolution] ?? 30_000_000,
+        shouldAbort: () => exportAbortRef.current,
+        onProgress: (frac) => setExportProg(Math.min(100, Math.round(frac * 100))),
+        drawFrame: (ctx, { elapsed, playhead, bands, mixer, totalDuration }) => {
+          drawExportFrame(ctx, cw, ch, elapsed, playhead, bands, mixer, totalDuration * 1000);
+          // Mirror progress onto the visible canvas, throttled — this loop
+          // isn't real-time bound so it can run far faster than 30fps.
+          if (visCtx && elapsed - lastPreviewUpdate > 200) {
+            lastPreviewUpdate = elapsed;
+            visCtx.drawImage(ctx.canvas, 0, 0);
+          }
+        },
+      });
+
+      const fname = `${(songTitle || "storybook").replace(/\s+/g, "-")}.webm`;
+      downloadBlobRef.current = { blob, name: fname };
+      triggerDownload(blob, fname);
+      const url = URL.createObjectURL(blob);
+      setDownloadUrl(url); setDownloadName(fname);
+    } catch (err) {
+      if (err?.name !== "AbortError") console.error("Export error:", err);
+    } finally {
+      setExporting(false);
+    }
+  }, [loops, resolution, tracks, crossfadeSec, songTitle, drawExportFrame, stopPreviewOnly]);
+
+  // Legacy export — MediaRecorder + canvas.captureStream on a real-time
+  // wall clock. Kept as a fallback for browsers without WebCodecs support
+  // (e.g. Firefox, Safari). Can stutter under a heavy effect stack because
+  // captureStream samples the canvas on a timer, not once drawing finishes.
+  const handleExportLegacy = useCallback(async () => {
     setExporting(true); setExportProg(0); stopPreviewOnly();
     let rec = null;
     try {
@@ -466,39 +580,10 @@ export default function App() {
           const bands = analyzeBands(analyser, sampleRate);
           let playhead = 0;
           if (mixer && audioCtxRef.current) playhead = audioCtxRef.current.currentTime - mixer.mixStart;
-          const bg = getBgForPlayhead(mixer, playhead);
-          if (bg.prog < 1) drawBgTransition(octx, cw, ch, bg.prevImg, bg.img, bg.prog, bgTransition);
-          else drawBg(octx, cw, ch, bg.img);
-
-          if (bokehEnabled) renderBokehSparkle(octx, cw, ch, elapsed, bands);
-          drawCenterPiece(octx, cw, ch, elapsed, bands);
-          if (spectrumEnabled) renderAudioSpectrum(octx, cw, ch, elapsed, bands);
-
-          let expLine1 = songTitle || audioName;
-          if (titleMode === "dynamic" && mixer) {
-            const cur = currentTrack(mixer.schedule, playhead);
-            if (cur) expLine1 = cur.name || expLine1;
-          }
-          if (showTitle) renderSongTitle(octx, cw, ch, expLine1, songTitle2, bands, elapsed, titlePos, titleFontSize, titleFontSize2);
-
-          const fadeMs = 15000;
+          drawExportFrame(octx, cw, ch, elapsed, playhead, bands, mixer, totalMs);
+          // Live audio fade (the shared draw fn only handles the visual fade).
           const remaining = totalMs - elapsed;
-          if (remaining < fadeMs) {
-            const fadeAlpha = 1 - (remaining / fadeMs);
-            octx.fillStyle = `rgba(0,0,0,${fadeAlpha})`;
-            octx.fillRect(0, 0, cw, ch);
-            if (exportGain) exportGain.gain.value = 1 - fadeAlpha;
-            if (endLogo && remaining < fadeMs * 0.67) {
-              const logoFadeIn = 1 - (remaining / (fadeMs * 0.67));
-              const logoAlpha = Math.min(1, logoFadeIn * 2) * (1 - Math.max(0, logoFadeIn - 0.7) / 0.3);
-              const maxLogoH = ch * 0.2;
-              const logoScale = Math.min(maxLogoH / endLogo.height, (cw * 0.3) / endLogo.width);
-              const logoW = endLogo.width * logoScale, logoH = endLogo.height * logoScale;
-              octx.globalAlpha = logoAlpha * 0.9;
-              octx.drawImage(endLogo, (cw - logoW) / 2, (ch - logoH) / 2, logoW, logoH);
-              octx.globalAlpha = 1;
-            }
-          }
+          if (exportGain && remaining < 15000) exportGain.gain.value = remaining / 15000;
           if (visCtx) visCtx.drawImage(off, 0, 0);
           if (elapsed - lastProgUpdate > 500) {
             lastProgUpdate = elapsed;
@@ -525,7 +610,16 @@ export default function App() {
     } finally {
       setExporting(false); exportTimerRef.current = null;
     }
-  }, [loops, resolution, tracks, crossfadeSec, titleMode, audioName, songTitle, songTitle2, showTitle, titlePos, titleFontSize, titleFontSize2, bokehEnabled, spectrumEnabled, drawCenterPiece, bgTransition, endLogo, getBgForPlayhead, stopPreviewOnly]);
+  }, [loops, resolution, tracks, crossfadeSec, songTitle, drawExportFrame, stopPreviewOnly]);
+
+  // Use frame-locked (WebCodecs) export when the browser supports it —
+  // falls back to the real-time MediaRecorder path otherwise.
+  const handleExport = useCallback(async () => {
+    const [cw, ch] = RES[resolution];
+    const supported = await isFrameLockedExportSupported(cw, ch);
+    if (supported) await handleExportFrameLocked();
+    else await handleExportLegacy();
+  }, [resolution, handleExportFrameLocked, handleExportLegacy]);
 
   useEffect(() => () => stopAll(), [stopAll]);
 
@@ -1199,7 +1293,7 @@ export default function App() {
                   <div style={{ height: "100%", width: `${exportProg}%`, background: "linear-gradient(90deg,#D4AF37,#F5E6A3)", transition: "width 0.3s", borderRadius: 6 }} />
                 </div>
                 <div style={{ textAlign: "center", fontSize: 16, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, marginTop: 6 }}>
-                  Export แบบ real-time · ≈ {Math.ceil(totalPlaylistDuration() * loops / 60)} นาที
+                  กำลังเรนเดอร์วิดีโอ — ระยะเวลาขึ้นอยู่กับความเร็วเครื่อง ไม่ใช่ real-time
                 </div>
               </div>
             )}
