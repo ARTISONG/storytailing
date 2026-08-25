@@ -28,6 +28,18 @@
    ever producing a file. Feeding audio first (then closing that track)
    lets the muxer flush video frames to the output as they're encoded,
    instead of hoarding the whole thing.
+
+   Audio itself is ALSO rendered in bounded-size chunks (~CHUNK_SEC each)
+   rather than one OfflineAudioContext spanning the whole song. An
+   OfflineAudioContext pre-allocates a buffer sized for its entire given
+   length up front — for a long playlist on a high loop count (an hour+
+   of total audio) that's over a gigabyte for a single allocation, enough
+   to crash the tab outright even with the fixes above. Chunk boundaries
+   are chosen to always land in a track's "solo" stretch — never inside a
+   crossfade — so each chunk can be scheduled independently using plain
+   arithmetic derived from the one full-timeline schedule computed up
+   front (via a throwaway, unrendered OfflineAudioContext just to get
+   mixer.js's per-track math without paying for a real render).
    ═══════════════════════════════════════════════════════════ */
 import {
   Output, WebMOutputFormat, BufferTarget,
@@ -38,6 +50,7 @@ import { createMixer } from "./mixer.js";
 import { analyzeBands } from "./audio.js";
 
 const AUDIO_FADE_SEC = 15; // must match the visual fade-to-black duration in drawFrame
+const CHUNK_SEC = 240; // target audio-chunk length; bounds peak memory regardless of song length
 
 export async function isFrameLockedExportSupported(width, height) {
   try {
@@ -45,6 +58,135 @@ export async function isFrameLockedExportSupported(width, height) {
   } catch (e) {
     return false;
   }
+}
+
+// Nudges a target chunk-boundary time to the nearest point that isn't inside
+// any track's crossfade window, so a chunk can always be scheduled with
+// simple "steady gain" edges — no automation curve ever needs to be split
+// across a chunk boundary.
+function nearestSafeBoundary(schedule, crossfade, totalDuration, target) {
+  if (target >= totalDuration) return totalDuration;
+  for (const tr of schedule) {
+    const trStart = tr.startOffset, trEnd = trStart + tr.duration;
+    if (target < trStart || target >= trEnd) continue;
+    const safeStart = trStart + (tr.index > 0 ? crossfade : 0);
+    const safeEnd = trEnd - (tr.index < schedule.length - 1 ? crossfade : 0);
+    if (safeStart >= safeEnd) return trEnd; // track too short to have a safe middle — just take it whole
+    if (target < safeStart) return safeStart;
+    if (target > safeEnd) return safeEnd;
+    return target;
+  }
+  return totalDuration;
+}
+
+function computeChunkBoundaries(schedule, crossfade, totalDuration) {
+  const bounds = [0];
+  let t = 0;
+  while (t < totalDuration) {
+    const next = nearestSafeBoundary(schedule, crossfade, totalDuration, Math.min(totalDuration, t + CHUNK_SEC));
+    bounds.push(next);
+    t = next;
+  }
+  return bounds;
+}
+
+// Builds the mixer graph for just [chunkStart, chunkEnd) into chunkCtx,
+// reusing the rate/timing already worked out in `schedule` (from the
+// full-timeline throwaway pass) instead of recomputing tempo-match. Tracks
+// that started in an earlier chunk resume mid-buffer via the source node's
+// offset param; tracks whose fade lies entirely in this chunk get the same
+// equal-power crossfade curves mixer.js uses for live playback.
+function buildChunkGraph(chunkCtx, tracks, schedule, { crossfade, chunkStart, chunkEnd, fadeStart, totalDuration }) {
+  const master = chunkCtx.createGain();
+  const analyser = chunkCtx.createAnalyser();
+  analyser.fftSize = 1024;
+  analyser.smoothingTimeConstant = 0.55;
+  master.connect(analyser);
+  const fadeGain = chunkCtx.createGain();
+  analyser.connect(fadeGain);
+  fadeGain.connect(chunkCtx.destination);
+
+  const steps = 64;
+  const fadeIn = new Float32Array(steps);
+  const fadeOut = new Float32Array(steps);
+  for (let k = 0; k < steps; k++) {
+    const x = k / (steps - 1);
+    fadeIn[k] = Math.sin(x * Math.PI / 2);
+    fadeOut[k] = Math.cos(x * Math.PI / 2);
+  }
+
+  for (const tr of schedule) {
+    const trStart = tr.startOffset, trEnd = trStart + tr.duration;
+    if (trEnd <= chunkStart || trStart >= chunkEnd) continue; // not audible in this chunk
+
+    const track = tracks[tr.index];
+    const isContinuing = trStart < chunkStart;
+    const localWhen = Math.max(0, trStart - chunkStart);
+    const bufferOffsetSec = isContinuing ? (chunkStart - trStart) * tr.rate : 0;
+
+    const src = chunkCtx.createBufferSource();
+    src.buffer = track.buffer;
+    src.playbackRate.value = tr.rate;
+
+    const g = chunkCtx.createGain();
+    const lp = chunkCtx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.Q.value = 0.707;
+    src.connect(lp);
+    lp.connect(g);
+    g.connect(master);
+
+    const hasPrev = tr.index > 0;
+    const hasNext = tr.index < schedule.length - 1;
+
+    if (isContinuing) {
+      // Whatever fade-in this track had already finished before this chunk
+      // started (guaranteed by the safe-boundary choice) — just steady on.
+      g.gain.setValueAtTime(1, 0);
+      lp.frequency.setValueAtTime(22000, 0);
+    } else if (hasPrev) {
+      g.gain.setValueAtTime(0.0001, localWhen);
+      g.gain.setValueCurveAtTime(fadeIn, localWhen, crossfade);
+      lp.frequency.setValueAtTime(380, localWhen);
+      lp.frequency.exponentialRampToValueAtTime(22000, localWhen + crossfade);
+    } else {
+      g.gain.setValueAtTime(1, localWhen);
+      lp.frequency.setValueAtTime(22000, localWhen);
+    }
+
+    if (hasNext) {
+      const fadeOutStartAbs = trEnd - crossfade;
+      if (fadeOutStartAbs >= chunkStart && fadeOutStartAbs < chunkEnd) {
+        const localFadeOutStart = fadeOutStartAbs - chunkStart;
+        g.gain.setValueAtTime(1, localFadeOutStart);
+        g.gain.setValueCurveAtTime(fadeOut, localFadeOutStart, crossfade);
+        lp.frequency.setValueAtTime(22000, localFadeOutStart);
+        lp.frequency.exponentialRampToValueAtTime(550, localFadeOutStart + crossfade);
+      }
+    }
+
+    src.start(localWhen, bufferOffsetSec);
+  }
+
+  // End-of-video audio fade-to-black — a plain linear ramp, so (unlike the
+  // equal-power crossfades above) it's fine if it happens to straddle a
+  // chunk boundary; just resume from the interpolated value.
+  if (fadeStart < chunkEnd) {
+    let startVal = 1, localStart = 0;
+    if (fadeStart < chunkStart) {
+      const frac = Math.min(1, (chunkStart - fadeStart) / AUDIO_FADE_SEC);
+      startVal = 1 + (0.0001 - 1) * frac;
+    } else {
+      localStart = fadeStart - chunkStart;
+    }
+    fadeGain.gain.setValueAtTime(startVal, localStart);
+    const localEnd = Math.min(chunkEnd, totalDuration) - chunkStart;
+    if (localEnd > localStart) fadeGain.gain.linearRampToValueAtTime(0.0001, localEnd);
+  } else {
+    fadeGain.gain.setValueAtTime(1, 0);
+  }
+
+  return { analyser };
 }
 
 /**
@@ -62,67 +204,31 @@ export async function exportFrameLocked({
 }) {
   const hasAudio = !!(tracks && tracks.length > 0);
   const sampleRate = hasAudio ? (tracks[0].buffer.sampleRate || 48000) : 48000;
+  // mixer.js clamps crossfade to a 2s floor internally, and the schedule's
+  // startOffset/duration numbers are computed using that clamped value — so
+  // our own boundary/graph math below must match it exactly, not the raw
+  // caller-supplied value, or chunk safety margins would disagree with what
+  // the schedule actually reflects.
+  const effectiveCrossfade = Math.max(2, crossfade ?? 10);
 
-  let offlineCtx = null, mixer = null, totalDuration = fallbackDuration;
+  // Throwaway, never-rendered context: just to get mixer.js's per-track
+  // timing/tempo-match math (schedule + totalDuration) without paying for
+  // a real render buffer sized to the whole song.
+  let schedule = null, totalDuration = fallbackDuration;
   if (hasAudio) {
-    const upperBoundSec = tracks.reduce((s, t) => s + t.buffer.duration, 0) + 2;
-    offlineCtx = new OfflineAudioContext(2, Math.ceil(upperBoundSec * sampleRate), sampleRate);
-
-    // Fade gain sits between the mixer's analyser and the offline
-    // destination, mirroring the live export's end-of-video audio fade
-    // (previously driven in real time via a GainNode on actx.destination).
-    const fadeGain = offlineCtx.createGain();
-    fadeGain.connect(offlineCtx.destination);
-    mixer = createMixer(offlineCtx, tracks, {
-      crossfade, startTime: 0, connectDestination: false, destinations: [fadeGain],
-    });
-    totalDuration = mixer.totalDuration;
-    const fadeStart = Math.max(0, totalDuration - AUDIO_FADE_SEC);
-    fadeGain.gain.setValueAtTime(1, fadeStart);
-    fadeGain.gain.linearRampToValueAtTime(0.0001, totalDuration);
+    const probeCtx = new OfflineAudioContext(2, 1, sampleRate);
+    const probeMixer = createMixer(probeCtx, tracks, { crossfade, startTime: 0, connectDestination: false });
+    schedule = probeMixer.schedule;
+    totalDuration = probeMixer.totalDuration;
   }
 
   const totalFrames = Math.max(1, Math.ceil(totalDuration * fps));
-
-  // ─── Pass 1: render audio offline, capturing the AnalyserNode's bands at
-  // each frame's exact timestamp along the way — nothing is drawn yet.
   const bandsPerFrame = new Array(totalFrames);
-  let rendered = null;
-  if (hasAudio) {
-    // suspend() must be scheduled *before* the render thread is let loose via
-    // resume(), or it free-runs to the end of the buffer before our next JS
-    // tick gets a chance to register the following suspend point. So the next
-    // suspend is always queued up first, and only then do we resume from the
-    // current one.
-    const suspendTimeFor = (i) => Math.max(i / fps, 0.0001);
-    let pendingSuspend = offlineCtx.suspend(suspendTimeFor(0));
-    const renderedBufferPromise = offlineCtx.startRendering();
+  const fadeStart = Math.max(0, totalDuration - AUDIO_FADE_SEC);
 
-    for (let i = 0; i < totalFrames; i++) {
-      if (shouldAbort && shouldAbort()) throw new DOMException("Export aborted", "AbortError");
-      // Waits for the render to reach this frame's timestamp so the
-      // analyser reflects that exact instant, then reads it before resuming.
-      await pendingSuspend;
-      bandsPerFrame[i] = analyzeBands(mixer.analyser, sampleRate);
-      if (i + 1 < totalFrames) pendingSuspend = offlineCtx.suspend(suspendTimeFor(i + 1));
-      offlineCtx.resume();
-      // Audio pre-render is usually much faster than the draw+encode pass
-      // below, so it only claims the first slice of the progress bar —
-      // otherwise it'd sit at 0% for a while on a long song and look stuck.
-      if (onProgress) onProgress((i + 1) / totalFrames * 0.2);
-      if (i % 50 === 0) await new Promise((r) => setTimeout(r, 0));
-    }
-
-    rendered = await renderedBufferPromise;
-  } else {
-    for (let i = 0; i < totalFrames; i++) bandsPerFrame[i] = analyzeBands(null, sampleRate);
-  }
-
-  // ─── Pass 2: draw + encode each video frame. Audio is hooked up first and
-  // its track closed immediately, so the muxer can interleave and flush
-  // video frames to the output as they're encoded instead of buffering the
-  // entire video in memory while it waits for audio that isn't coming until
-  // the very end (see file header).
+  // ─── Set up the output/tracks first so audio chunks can be fed to the
+  // muxer as they're rendered (see file header for why audio must be fully
+  // queued — and its track closed — before any video frame is drawn).
   const canvas = new OffscreenCanvas(width, height);
   const ctx = canvas.getContext("2d");
 
@@ -140,17 +246,57 @@ export async function exportFrameLocked({
 
   await output.start();
 
+  // ─── Pass 1: render audio chunk by chunk, capturing the AnalyserNode's
+  // bands at each frame's exact timestamp along the way — nothing is drawn
+  // yet. Each chunk's rendered audio is fed to the muxer immediately and
+  // then dropped, so peak memory stays bounded by CHUNK_SEC, not song length.
   if (hasAudio) {
-    // Fed as-is, no trim-to-exact-length copy: that would mean holding two
-    // full-length copies of the whole song's audio in memory at once, which
-    // for a long export (many minutes, high loop count) adds up fast. The
-    // few seconds of slack past totalDuration are already faded to near
-    // silence (AUDIO_FADE_SEC), so leaving them in is inaudible — the track
-    // just runs a hair longer than the video, which every player tolerates.
-    await audioSource.add(rendered);
+    const bounds = computeChunkBoundaries(schedule, effectiveCrossfade, totalDuration);
+
+    for (let c = 0; c < bounds.length - 1; c++) {
+      const chunkStart = bounds[c], chunkEnd = bounds[c + 1];
+      const chunkDur = chunkEnd - chunkStart;
+      if (chunkDur <= 0) continue;
+
+      const chunkCtx = new OfflineAudioContext(2, Math.ceil(chunkDur * sampleRate) + 1, sampleRate);
+      const { analyser } = buildChunkGraph(chunkCtx, tracks, schedule, { crossfade: effectiveCrossfade, chunkStart, chunkEnd, fadeStart, totalDuration });
+
+      const idxStart = Math.max(0, Math.ceil(chunkStart * fps - 1e-9));
+      const idxEnd = Math.min(totalFrames, Math.ceil(chunkEnd * fps - 1e-9));
+      const localSuspendFor = (i) => Math.max(i / fps - chunkStart, 0.0001);
+
+      let pendingSuspend = idxStart < idxEnd ? chunkCtx.suspend(localSuspendFor(idxStart)) : null;
+      const renderedPromise = chunkCtx.startRendering();
+
+      for (let i = idxStart; i < idxEnd; i++) {
+        if (shouldAbort && shouldAbort()) throw new DOMException("Export aborted", "AbortError");
+        await pendingSuspend;
+        bandsPerFrame[i] = analyzeBands(analyser, sampleRate);
+        if (i + 1 < idxEnd) pendingSuspend = chunkCtx.suspend(localSuspendFor(i + 1));
+        chunkCtx.resume();
+        // Audio pre-render is usually much faster than the draw+encode pass
+        // below, so it only claims the first slice of the progress bar —
+        // otherwise it'd sit at 0% for a while on a long song and look stuck.
+        if (onProgress) onProgress((i + 1) / totalFrames * 0.2);
+        if (i % 50 === 0) await new Promise((r) => setTimeout(r, 0));
+      }
+
+      const chunkRendered = await renderedPromise;
+      await audioSource.add(chunkRendered);
+    }
+
     audioSource.close();
-    rendered = null;
+  } else {
+    for (let i = 0; i < totalFrames; i++) bandsPerFrame[i] = analyzeBands(null, sampleRate);
   }
+
+  // ─── Pass 2: draw + encode each video frame, using the bands captured
+  // above. Audio is already fully queued and closed, so the muxer can
+  // interleave and flush video frames to the output as they're encoded
+  // instead of buffering the entire video in memory.
+  // drawFrame only ever reads .schedule off this (per-track background
+  // crossfades, dynamic title lookup) — no need for a real mixer/audio graph.
+  const scheduleInfo = hasAudio ? { schedule, totalDuration } : null;
 
   for (let i = 0; i < totalFrames; i++) {
     if (shouldAbort && shouldAbort()) {
@@ -159,7 +305,7 @@ export async function exportFrameLocked({
     }
 
     const t = i / fps;
-    await drawFrame(ctx, { elapsed: t * 1000, playhead: t, bands: bandsPerFrame[i], mixer, frameIndex: i, totalFrames, totalDuration });
+    await drawFrame(ctx, { elapsed: t * 1000, playhead: t, bands: bandsPerFrame[i], mixer: scheduleInfo, frameIndex: i, totalFrames, totalDuration });
     await videoSource.add(t, 1 / fps);
 
     if (onProgress) onProgress(0.2 + (i + 1) / totalFrames * 0.8);
