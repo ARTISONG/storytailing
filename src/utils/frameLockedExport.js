@@ -106,6 +106,10 @@ export async function exportFrameLocked({
       bandsPerFrame[i] = analyzeBands(mixer.analyser, sampleRate);
       if (i + 1 < totalFrames) pendingSuspend = offlineCtx.suspend(suspendTimeFor(i + 1));
       offlineCtx.resume();
+      // Audio pre-render is usually much faster than the draw+encode pass
+      // below, so it only claims the first slice of the progress bar —
+      // otherwise it'd sit at 0% for a while on a long song and look stuck.
+      if (onProgress) onProgress((i + 1) / totalFrames * 0.2);
       if (i % 50 === 0) await new Promise((r) => setTimeout(r, 0));
     }
 
@@ -137,13 +141,15 @@ export async function exportFrameLocked({
   await output.start();
 
   if (hasAudio) {
-    const exactSamples = Math.min(rendered.length, Math.round(totalDuration * sampleRate));
-    const trimmed = new AudioBuffer({ length: exactSamples, sampleRate, numberOfChannels: rendered.numberOfChannels });
-    for (let c = 0; c < rendered.numberOfChannels; c++) {
-      trimmed.copyToChannel(rendered.getChannelData(c).subarray(0, exactSamples), c);
-    }
-    await audioSource.add(trimmed);
+    // Fed as-is, no trim-to-exact-length copy: that would mean holding two
+    // full-length copies of the whole song's audio in memory at once, which
+    // for a long export (many minutes, high loop count) adds up fast. The
+    // few seconds of slack past totalDuration are already faded to near
+    // silence (AUDIO_FADE_SEC), so leaving them in is inaudible — the track
+    // just runs a hair longer than the video, which every player tolerates.
+    await audioSource.add(rendered);
     audioSource.close();
+    rendered = null;
   }
 
   for (let i = 0; i < totalFrames; i++) {
@@ -156,7 +162,7 @@ export async function exportFrameLocked({
     await drawFrame(ctx, { elapsed: t * 1000, playhead: t, bands: bandsPerFrame[i], mixer, frameIndex: i, totalFrames, totalDuration });
     await videoSource.add(t, 1 / fps);
 
-    if (onProgress) onProgress((i + 1) / totalFrames);
+    if (onProgress) onProgress(0.2 + (i + 1) / totalFrames * 0.8);
 
     // Yield to the event loop periodically so the UI (progress %) can repaint.
     if (i % 10 === 0) await new Promise((r) => setTimeout(r, 0));
