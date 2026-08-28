@@ -5,7 +5,7 @@ import { renderSongTitle } from "./visualizers/songTitle.js";
 import { renderBokehSparkle, setBokehConfig } from "./visualizers/bokehSparkle.js";
 import { renderAudioSpectrum, setSpectrumConfig } from "./visualizers/audioSpectrum.js";
 import { renderRadialSpectrum, setRadialConfig } from "./visualizers/radialSpectrum.js";
-import { isFrameLockedExportSupported, exportFrameLocked } from "./utils/frameLockedExport.js";
+import { isFrameLockedExportSupported, exportFrameLocked, sweepExportScratch } from "./utils/frameLockedExport.js";
 
 /* ═══════════════════════════════════════════════════════════
    DOWNLOAD HELPER
@@ -107,6 +107,7 @@ export default function App() {
   const [exportProg, setExportProg] = useState(0);
   const [downloadUrl, setDownloadUrl] = useState(null);
   const [downloadName, setDownloadName] = useState("");
+  const [exportError, setExportError] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const [resolution, setResolution] = useState("1080p");
   const [step, setStep] = useState(1);
@@ -471,7 +472,7 @@ export default function App() {
   // at a fixed timestep, decoupled from wall-clock speed. See
   // src/utils/frameLockedExport.js for why this replaces MediaRecorder.
   const handleExportFrameLocked = useCallback(async () => {
-    setExporting(true); setExportProg(0); stopPreviewOnly();
+    setExporting(true); setExportProg(0); setExportError(""); stopPreviewOnly();
     exportAbortRef.current = false;
     try {
       const [cw, ch] = RES[resolution];
@@ -511,7 +512,13 @@ export default function App() {
       const url = URL.createObjectURL(blob);
       setDownloadUrl(url); setDownloadName(fname);
     } catch (err) {
-      if (err?.name !== "AbortError") console.error("Export error:", err);
+      // Never fail silently: without this the export just stops, the progress
+      // bar disappears and no download popup ever shows — which reads as "the
+      // button did nothing" rather than as an error the user can act on.
+      if (err?.name !== "AbortError") {
+        console.error("Export error:", err);
+        setExportError(err?.message || String(err));
+      }
     } finally {
       setExporting(false);
     }
@@ -522,7 +529,7 @@ export default function App() {
   // (e.g. Firefox, Safari). Can stutter under a heavy effect stack because
   // captureStream samples the canvas on a timer, not once drawing finishes.
   const handleExportLegacy = useCallback(async () => {
-    setExporting(true); setExportProg(0); stopPreviewOnly();
+    setExporting(true); setExportProg(0); setExportError(""); stopPreviewOnly();
     let rec = null;
     try {
       const [cw, ch] = RES[resolution];
@@ -595,7 +602,7 @@ export default function App() {
       });
 
       await done;
-      if (chunks.length === 0) { console.error("No data recorded!"); return; }
+      if (chunks.length === 0) { setExportError("ไม่มีข้อมูลวิดีโอถูกบันทึก (MediaRecorder ไม่คืนข้อมูล)"); return; }
       const blob = new Blob(chunks, { type: "video/webm" });
       const fname = `${(songTitle || "storybook").replace(/\s+/g, "-")}.webm`;
       downloadBlobRef.current = { blob, name: fname };
@@ -604,6 +611,7 @@ export default function App() {
       setDownloadUrl(url); setDownloadName(fname);
     } catch (err) {
       console.error("Export error:", err);
+      setExportError(err?.message || String(err));
       if (rec && rec.state === "recording") try { rec.stop(); } catch (e) { }
       if (sourceRef.current) { try { sourceRef.current.stop() } catch (e) { } sourceRef.current = null; }
       if (mixerRef.current) { try { mixerRef.current.stop() } catch (e) { } mixerRef.current = null; }
@@ -622,6 +630,11 @@ export default function App() {
   }, [resolution, handleExportFrameLocked, handleExportLegacy]);
 
   useEffect(() => () => stopAll(), [stopAll]);
+
+  // Long exports stream to a scratch file on disk rather than into RAM; if one
+  // was killed mid-render (aborted, tab closed) that file is orphaned. Clear
+  // those out at startup, before this session creates one of its own.
+  useEffect(() => { sweepExportScratch(); }, []);
 
   useEffect(() => {
     if (step === 2 && canvasRef.current) {
@@ -1295,6 +1308,16 @@ export default function App() {
                 </div>
                 <div style={{ textAlign: "center", fontSize: 16, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, marginTop: 6 }}>
                   กำลังเรนเดอร์วิดีโอ — ระยะเวลาขึ้นอยู่กับความเร็วเครื่อง ไม่ใช่ real-time
+                </div>
+              </div>
+            )}
+
+            {!exporting && exportError && (
+              <div style={{ maxWidth: 480, margin: "16px auto 0", background: "rgba(200,80,80,0.06)", border: "1px solid rgba(200,80,80,0.25)", borderRadius: 8, padding: "14px 18px" }}>
+                <div style={{ fontSize: 14, color: "#E0928C", fontFamily: "'Sarabun'", marginBottom: 6 }}>Export ไม่สำเร็จ</div>
+                <div style={{ fontSize: 13, color: "#B0AAA2", fontFamily: "'Sarabun'", fontWeight: 200, wordBreak: "break-word" }}>{exportError}</div>
+                <div style={{ fontSize: 12, color: "#7A746C", fontFamily: "'Sarabun'", fontWeight: 200, marginTop: 8 }}>
+                  ถ้าคลิปยาวมาก ลองลดความละเอียด หรือลดจำนวน loop แล้ว export ใหม่
                 </div>
               </div>
             )}
