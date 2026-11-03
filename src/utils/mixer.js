@@ -70,14 +70,53 @@ export async function detectBPM(buffer) {
   }
 }
 
+// Tempo-match rate per track: only snap if the BPM ratio is within tolerance
+// (avoids chipmunk). A track's rate changes how long it actually sounds, so
+// this has to be known before any crossfade length can be judged.
+function trackRates(tracks) {
+  return tracks.map((t, i) => {
+    const prev = tracks[i - 1];
+    if (prev && prev.bpm && t.bpm) {
+      const r = prev.bpm / t.bpm;
+      if (r >= 0.86 && r <= 1.16) return r;
+    }
+    return 1;
+  });
+}
+
+/* The longest crossfade a playlist can actually sustain, which is half the
+   shortest track.
+
+   Beyond that a track's fade-OUT would have to begin before its own fade-IN
+   had finished — so the gain automation gets scheduled at a time before the
+   track starts, i.e. a negative AudioContext time, and the Web Audio API
+   throws RangeError. One track shorter than the crossfade (a short intro or
+   jingle against the 10s default) was enough to take down the whole preview.
+
+   Callers that show a duration or a timestamp use this too, so the numbers on
+   screen match the mix that actually gets built. */
+export function effectiveCrossfade(tracks, requested) {
+  const want = Math.max(2, requested ?? 10);
+  const usable = (tracks || []).filter(t => t && t.buffer);
+  if (!usable.length) return want;
+  const rates = trackRates(usable);
+  const shortest = Math.min(...usable.map((t, i) => t.buffer.duration / rates[i]));
+  return Math.max(0.01, Math.min(want, shortest / 2));
+}
+
 /* Build and schedule a crossfaded playlist. Returns an object with
-   analyser, totalDuration (s), schedule[], and stop().
+   analyser, totalDuration (s), crossfade (the effective one — see
+   effectiveCrossfade), schedule[], and stop().
    Tracks: [{ buffer, bpm, name }] — bpm optional (0 = unknown) */
 export function createMixer(audioCtx, tracks, opts = {}) {
-  const crossfade = Math.max(2, opts.crossfade ?? 10);
+  const crossfade = effectiveCrossfade(tracks, opts.crossfade);
   const startDelay = opts.startDelay ?? 0.15;
-  // opts.startTime lets caller schedule the exact absolute start (for seamless loop crossfade)
-  const mixStart = opts.startTime ?? (audioCtx.currentTime + startDelay);
+  // opts.startTime lets caller schedule the exact absolute start (for seamless
+  // loop crossfade). Never earlier than now, though: a caller handing over a
+  // stale time — a loop restart worked out before a slow frame, say — would
+  // otherwise push automation to a negative timestamp and throw.
+  const rates = trackRates(tracks);
+  const mixStart = Math.max(audioCtx.currentTime, opts.startTime ?? (audioCtx.currentTime + startDelay));
 
   // Master chain → analyser → destinations (multiple allowed)
   const master = audioCtx.createGain();
@@ -98,14 +137,7 @@ export function createMixer(audioCtx, tracks, opts = {}) {
 
   for (let i = 0; i < tracks.length; i++) {
     const t = tracks[i];
-    const prev = tracks[i - 1];
-
-    // Tempo-match: only snap if ratio within tolerance (avoids chipmunk)
-    let rate = 1;
-    if (prev && prev.bpm && t.bpm) {
-      const r = prev.bpm / t.bpm;
-      if (r >= 0.86 && r <= 1.16) rate = r;
-    }
+    const rate = rates[i];
 
     const src = audioCtx.createBufferSource();
     src.buffer = t.buffer;
@@ -177,6 +209,10 @@ export function createMixer(audioCtx, tracks, opts = {}) {
     sources,
     schedule,
     mixStart,
+    // The crossfade this mix was actually built with, which may be shorter
+    // than the one asked for. Anything deriving times from the schedule has
+    // to use this value, not the raw setting, or it disagrees with the audio.
+    crossfade,
     totalDuration: offsetSec,
     stop() {
       sources.forEach(s => { try { s.stop(); } catch (e) {} });

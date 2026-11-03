@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { analyzeBands } from "./utils/audio.js";
-import { detectBPM, createMixer, currentTrack } from "./utils/mixer.js";
+import { detectBPM, createMixer, currentTrack, effectiveCrossfade } from "./utils/mixer.js";
 import { renderSongTitle } from "./visualizers/songTitle.js";
 import { renderBokehSparkle, setBokehConfig } from "./visualizers/bokehSparkle.js";
 import { renderAudioSpectrum, setSpectrumConfig } from "./visualizers/audioSpectrum.js";
@@ -216,11 +216,16 @@ export default function App() {
       color: radialColor, colorMode: radialColorMode, opacity: radialOpacity, threshold: radialThreshold });
   }, [radialCX, radialCY, radialRadius, radialGapDeg, radialTicks, radialJitter, radialTickLength, radialDust, radialBloom, radialBloomGap, radialBloomSpread, radialBloomSize, radialBloomRings, radialColor, radialColorMode, radialOpacity, radialThreshold]);
 
+  // The crossfade the mix will really be built with — shortened when a track
+  // is too short to carry the full setting. Every duration shown to the user
+  // derives from this, so the numbers match the exported video.
+  const realCrossfade = useMemo(() => effectiveCrossfade(tracks, crossfadeSec), [tracks, crossfadeSec]);
+
   // YouTube chapter list — track start times across all loops
   const youtubeChapters = useMemo(() => {
     const ready = tracks.filter(t => t.buffer);
     if (!ready.length) return "";
-    const total = (ready.reduce((s, t) => s + t.buffer.duration, 0) - crossfadeSec * (ready.length - 1)) * loops;
+    const total = (ready.reduce((s, t) => s + t.buffer.duration, 0) - realCrossfade * (ready.length - 1)) * loops;
     const fmt = (sec) => {
       const s = Math.max(0, Math.round(sec));
       const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
@@ -232,18 +237,18 @@ export default function App() {
     for (let l = 0; l < loops; l++) {
       for (let i = 0; i < ready.length; i++) {
         lines.push(`${fmt(t)} ${ready[i].name || `Track ${i + 1}`}`);
-        t += ready[i].buffer.duration - crossfadeSec;
+        t += ready[i].buffer.duration - realCrossfade;
       }
     }
     return lines.join("\n");
-  }, [tracks, loops, crossfadeSec]);
+  }, [tracks, loops, realCrossfade]);
   const [chaptersCopied, setChaptersCopied] = useState(false);
 
   const totalPlaylistDuration = useCallback(() => {
     if (!tracks.length) return 0;
     const sum = tracks.reduce((s, t) => s + (t.buffer ? t.buffer.duration : 0), 0);
-    return Math.max(0, sum - crossfadeSec * (tracks.length - 1));
-  }, [tracks, crossfadeSec]);
+    return Math.max(0, sum - realCrossfade * (tracks.length - 1));
+  }, [tracks, realCrossfade]);
 
   const stopPreviewOnly = useCallback(() => {
     if (animRef.current) cancelAnimationFrame(animRef.current); animRef.current = null;
@@ -310,13 +315,16 @@ export default function App() {
     };
     const into = playhead - cur.startOffset;
     const curRef = { track: trackFor(cur), localT: Math.max(0, into), index: cur.index };
-    // transition window = first crossfadeSec seconds of the current entry
-    if (cur.index > 0 && into < crossfadeSec) {
+    // Transition window = the first crossfade seconds of the current entry, so
+    // the picture changes over exactly as long as the audio does. That means
+    // the mixer's effective crossfade, which can be shorter than the setting.
+    const xf = mixer.crossfade || crossfadeSec;
+    if (cur.index > 0 && into < xf) {
       const pe = sched[cur.index - 1];
       return {
         cur: curRef,
         prev: { track: trackFor(pe), localT: Math.max(0, playhead - pe.startOffset), index: pe.index },
-        prog: into / crossfadeSec,
+        prog: into / xf,
       };
     }
     return { cur: curRef, prev: null, prog: 1 };
@@ -374,7 +382,13 @@ export default function App() {
       const m = createMixer(actx, readyTracks, { crossfade: crossfadeSec, startTime });
       mixerRef.current = m;
       liveAnalyserRef.current = m.analyser;
-      const nextStartAbs = m.mixStart + m.totalDuration - crossfadeSec;
+      // The next pass of the playlist overlaps this one by the crossfade, so
+      // the loop seam is as smooth as a track change. Use the mixer's own
+      // (possibly shortened) crossfade, not the raw setting: with the raw one
+      // a playlist shorter than the crossfade put this point in the past, and
+      // the zero delay then restarted the mixer over and over, each time
+      // scheduling audio at a negative timestamp.
+      const nextStartAbs = Math.max(actx.currentTime, m.mixStart + m.totalDuration - m.crossfade);
       const delayMs = Math.max(0, (nextStartAbs - actx.currentTime) * 1000);
       cycleTimerRef.current = setTimeout(() => {
         if (animRef.current) scheduleCycle(nextStartAbs);
@@ -604,7 +618,7 @@ export default function App() {
       const repeated = [];
       for (let r = 0; r < loops; r++) repeated.push(...readyTracks);
       const singleLen = readyTracks.length
-        ? readyTracks.reduce((s, t) => s + t.buffer.duration, 0) - crossfadeSec * (readyTracks.length - 1)
+        ? readyTracks.reduce((s, t) => s + t.buffer.duration, 0) - realCrossfade * (readyTracks.length - 1)
         : 60;
       const fallbackDuration = singleLen * loops;
 
@@ -691,7 +705,7 @@ export default function App() {
     } finally {
       setExporting(false);
     }
-  }, [loops, resolution, tracks, crossfadeSec, songTitle, clipXfade, getBgAt, drawExportFrame, stopPreviewOnly]);
+  }, [loops, resolution, tracks, crossfadeSec, realCrossfade, songTitle, clipXfade, getBgAt, drawExportFrame, stopPreviewOnly]);
 
   // Legacy export — MediaRecorder + canvas.captureStream on a real-time
   // wall clock. Kept as a fallback for browsers without WebCodecs support
@@ -707,7 +721,7 @@ export default function App() {
       const octx = off.getContext("2d");
       const readyTracks = tracks.filter(t => t.buffer);
       const singleLen = readyTracks.length
-        ? readyTracks.reduce((s, t) => s + t.buffer.duration, 0) - crossfadeSec * (readyTracks.length - 1)
+        ? readyTracks.reduce((s, t) => s + t.buffer.duration, 0) - realCrossfade * (readyTracks.length - 1)
         : 60;
       const totalDur = singleLen * loops;
       const stream = off.captureStream(30);
@@ -791,7 +805,7 @@ export default function App() {
     } finally {
       setExporting(false); exportTimerRef.current = null;
     }
-  }, [loops, resolution, tracks, crossfadeSec, songTitle, getBgAt, layersLive, drawExportFrame, stopPreviewOnly]);
+  }, [loops, resolution, tracks, crossfadeSec, realCrossfade, songTitle, getBgAt, layersLive, drawExportFrame, stopPreviewOnly]);
 
   // Use frame-locked (WebCodecs) export when the browser supports it —
   // falls back to the real-time MediaRecorder path otherwise.
@@ -1000,7 +1014,11 @@ export default function App() {
                 {tracks.length > 1 && (
                   <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid #14120F" }}>
                     <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6 }}>
-                      Crossfade ({crossfadeSec}s) · beat-match + EQ sweep
+                      Crossfade ({crossfadeSec}s)
+                      {realCrossfade < crossfadeSec - 0.01 && (
+                        <span style={{ color: gold(0.6) }}> → ใช้ {realCrossfade.toFixed(1)}s (เพลงสั้นสุดรองรับได้เท่านี้)</span>
+                      )}
+                      {" · beat-match + EQ sweep"}
                     </label>
                     <input type="range" min={2} max={20} step={1} value={crossfadeSec} onChange={e => setCrossfadeSec(Number(e.target.value))} style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
 

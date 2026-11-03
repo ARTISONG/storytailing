@@ -250,22 +250,24 @@ export async function exportFrameLocked({
 }) {
   const hasAudio = !!(tracks && tracks.length > 0);
   const sampleRate = hasAudio ? (tracks[0].buffer.sampleRate || 48000) : 48000;
-  // mixer.js clamps crossfade to a 2s floor internally, and the schedule's
-  // startOffset/duration numbers are computed using that clamped value — so
-  // our own boundary/graph math below must match it exactly, not the raw
-  // caller-supplied value, or chunk safety margins would disagree with what
-  // the schedule actually reflects.
-  const effectiveCrossfade = Math.max(2, crossfade ?? 10);
 
   // Throwaway, never-rendered context: just to get mixer.js's per-track
   // timing/tempo-match math (schedule + totalDuration) without paying for
   // a real render buffer sized to the whole song.
+  //
+  // mixer.js may shorten the crossfade to fit the shortest track, and the
+  // schedule's startOffset/duration numbers reflect whatever it settled on —
+  // so take that value from the mixer rather than recomputing it here, or the
+  // chunk safety margins below would disagree with the schedule they're
+  // derived from.
   let schedule = null, totalDuration = fallbackDuration;
+  let effectiveCrossfade = Math.max(2, crossfade ?? 10);
   if (hasAudio) {
     const probeCtx = new OfflineAudioContext(2, 1, sampleRate);
     const probeMixer = createMixer(probeCtx, tracks, { crossfade, startTime: 0, connectDestination: false });
     schedule = probeMixer.schedule;
     totalDuration = probeMixer.totalDuration;
+    effectiveCrossfade = probeMixer.crossfade;
   }
 
   const totalFrames = Math.max(1, Math.ceil(totalDuration * fps));
@@ -289,7 +291,7 @@ export async function exportFrameLocked({
 
   // drawFrame only ever reads .schedule off this (per-track background
   // crossfades, dynamic title lookup) — no need for a real mixer/audio graph.
-  const scheduleInfo = hasAudio ? { schedule, totalDuration } : null;
+  const scheduleInfo = hasAudio ? { schedule, totalDuration, crossfade: effectiveCrossfade } : null;
   const bail = () => { throw new DOMException("Export aborted", "AbortError"); };
 
   let finalized = false;
