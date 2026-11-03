@@ -6,6 +6,8 @@ import { renderBokehSparkle, setBokehConfig } from "./visualizers/bokehSparkle.j
 import { renderAudioSpectrum, setSpectrumConfig } from "./visualizers/audioSpectrum.js";
 import { renderRadialSpectrum, setRadialConfig } from "./visualizers/radialSpectrum.js";
 import { isFrameLockedExportSupported, exportFrameLocked, sweepExportScratch } from "./utils/frameLockedExport.js";
+import { buildClipCycle, createClipPreview } from "./utils/clipTimeline.js";
+import { probeClip, createClipDecoder } from "./utils/videoBg.js";
 
 /* ═══════════════════════════════════════════════════════════
    DOWNLOAD HELPER
@@ -33,58 +35,71 @@ const Btn = ({ children, primary, disabled, onClick, sx }) => (
 );
 
 /* ═══════════════════════════════════════════════════════════
-   DRAW BACKGROUND IMAGE (cover-fit)
+   DRAW BACKGROUND (cover-fit)
+   ───────────────────────────────────────────────────────────
+   A track's background is a LIST of layers rather than one image, because a
+   video-clip background is itself two clips blended during its own
+   clip-to-clip crossfade. A still image is just a one-layer list. Every
+   transition below applies its zoom/slide/alpha to the whole list, so a
+   between-track transition composites correctly either way.
    ═══════════════════════════════════════════════════════════ */
-function drawCover(ctx, cw, ch, img, { zoom = 1, dx = 0, alpha = 1 } = {}) {
-  if (!img || alpha <= 0) return;
-  const scale = Math.max(cw / img.width, ch / img.height) * zoom;
-  const sw = img.width * scale, sh = img.height * scale;
-  ctx.globalAlpha = alpha;
-  ctx.drawImage(img, (cw - sw) / 2 + dx, (ch - sh) / 2, sw, sh);
+function drawLayer(ctx, cw, ch, layer, { zoom = 1, dx = 0, alpha = 1 } = {}) {
+  if (!layer || !layer.src || !layer.w || !layer.h) return;
+  const a = alpha * (layer.alpha ?? 1);
+  if (a <= 0) return;
+  const scale = Math.max(cw / layer.w, ch / layer.h) * zoom;
+  const sw = layer.w * scale, sh = layer.h * scale;
+  ctx.globalAlpha = a;
+  ctx.drawImage(layer.src, (cw - sw) / 2 + dx, (ch - sh) / 2, sw, sh);
   ctx.globalAlpha = 1;
 }
 
-function drawBg(ctx, cw, ch, img) {
+function drawLayers(ctx, cw, ch, layers, opts) {
+  if (!layers) return;
+  for (const layer of layers) drawLayer(ctx, cw, ch, layer, opts);
+}
+
+function drawBg(ctx, cw, ch, layers) {
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, cw, ch);
-  drawCover(ctx, cw, ch, img);
+  drawLayers(ctx, cw, ch, layers);
 }
 
 const ease = p => p * p * (3 - 2 * p);   // smoothstep
 
-/* Draw the background with a transition between prev → next image.
+/* Draw the background with a transition between prev → next track.
    prog: 0..1 through the transition window. */
-export function drawBgTransition(ctx, cw, ch, prevImg, img, prog, style) {
+export function drawBgTransition(ctx, cw, ch, prevLayers, layers, prog, style) {
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, cw, ch);
   const p = ease(Math.min(1, Math.max(0, prog)));
 
   switch (style) {
     case "cut":
-      drawCover(ctx, cw, ch, img);
+      drawLayers(ctx, cw, ch, layers);
       break;
     case "fadeblack": {
       // first half: prev fades to black, second half: next fades in
-      if (p < 0.5) drawCover(ctx, cw, ch, prevImg, { alpha: 1 - p * 2 });
-      else         drawCover(ctx, cw, ch, img,     { alpha: (p - 0.5) * 2 });
+      if (p < 0.5) drawLayers(ctx, cw, ch, prevLayers, { alpha: 1 - p * 2 });
+      else         drawLayers(ctx, cw, ch, layers,     { alpha: (p - 0.5) * 2 });
       break;
     }
     case "zoom": {
       // prev zooms in as it fades out; next settles from a slight zoom
-      drawCover(ctx, cw, ch, prevImg, { zoom: 1 + p * 0.12, alpha: 1 - p });
-      drawCover(ctx, cw, ch, img,     { zoom: 1.12 - p * 0.12, alpha: p });
+      drawLayers(ctx, cw, ch, prevLayers, { zoom: 1 + p * 0.12, alpha: 1 - p });
+      drawLayers(ctx, cw, ch, layers,     { zoom: 1.12 - p * 0.12, alpha: p });
       break;
     }
     case "slide": {
       // push: prev slides out left while next slides in from the right — no gaps
-      drawCover(ctx, cw, ch, prevImg, { dx: -cw * p });
-      drawCover(ctx, cw, ch, img,     { dx:  cw * (1 - p) });
+      drawLayers(ctx, cw, ch, prevLayers, { dx: -cw * p });
+      drawLayers(ctx, cw, ch, layers,     { dx:  cw * (1 - p) });
       break;
     }
     case "fade":
     default:
-      drawCover(ctx, cw, ch, prevImg, { alpha: 1 - p });
-      drawCover(ctx, cw, ch, img,     { alpha: p });
+      drawLayers(ctx, cw, ch, prevLayers, { alpha: 1 - p });
+      drawLayers(ctx, cw, ch, layers,     { alpha: p });
       break;
   }
 }
@@ -108,6 +123,9 @@ export default function App() {
   const [downloadUrl, setDownloadUrl] = useState(null);
   const [downloadName, setDownloadName] = useState("");
   const [exportError, setExportError] = useState("");
+  const [clipXfade, setClipXfade] = useState(2);   // crossfade between background clips (s)
+  const [clipBusy, setClipBusy] = useState(false); // reading clip metadata on upload
+  const [clipError, setClipError] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const [resolution, setResolution] = useState("1080p");
   const [step, setStep] = useState(1);
@@ -171,6 +189,10 @@ export default function App() {
   const frameTimeEMARef = useRef(8);   // rolling avg preview draw cost (ms)
   const lowFpsModeRef = useRef(false); // true → drawing every other frame
   const exportAbortRef = useRef(false);
+  // Live <video> players for clip backgrounds, keyed by the track's bgClips
+  // array. Keying on the array (not the track) means an unrelated track edit
+  // — renaming it, say — doesn't tear down and reload its clips.
+  const clipPlayersRef = useRef(new Map());
 
   const RES = { "720p": [1280, 720], "1080p": [1920, 1080], "1440p": [2560, 1440], "4K": [3840, 2160] };
   const BITRATE = { "720p": 8_000_000, "1080p": 20_000_000, "1440p": 40_000_000, "4K": 80_000_000 };
@@ -230,6 +252,8 @@ export default function App() {
     if (mixerRef.current) { try { mixerRef.current.stop() } catch (e) { } mixerRef.current = null; }
     if (sourceRef.current) { try { sourceRef.current.stop() } catch (e) { } sourceRef.current = null; }
     liveAnalyserRef.current = null;
+    // Leave the clips loaded but stop them decoding in the background.
+    for (const player of clipPlayersRef.current.values()) player.pause();
     setPlaying(false); setBandLevels(null);
   }, []);
 
@@ -262,28 +286,75 @@ export default function App() {
     if (radialEnabled) renderRadialSpectrum(c, cw, ch, elapsed, bands);
   }, [centerLogo, centerLogoSize, centerLogoOpacity, radialCX, radialCY, radialEnabled]);
 
-  // Returns { img, prevImg, prog } — prog in [0,1) while transitioning.
-  const getBgForPlayhead = useCallback((mixer, playhead) => {
+  /* Which track owns the background at `playhead`, and how far into that
+     track we are — clip sequences are timed from the track's own start, so a
+     track-local clock is what the clip cycle needs. prog < 1 means we're
+     inside the between-track transition window.
+     Returns { cur, prev, prog } where cur/prev are { track, localT, index }.
+     `index` is the schedule entry, not the track — on a looped export the
+     same track appears several times and each repetition plays its clips from
+     the start, so the two sides of a loop-boundary crossfade are two
+     independent positions in the same files. */
+  const getBgAt = useCallback((mixer, playhead) => {
     const t = tracksRef.current;
-    const none = { img: t[0]?.bgImage || null, prevImg: null, prog: 1 };
-    if (!t.length) return { img: null, prevImg: null, prog: 1 };
-    if (!mixer) return none;
+    if (!t.length) return { cur: null, prev: null, prog: 1 };
+    const first = { cur: { track: t[0], localT: Math.max(0, playhead), index: 0 }, prev: null, prog: 1 };
+    if (!mixer) return first;
     const sched = mixer.schedule;
     const cur = currentTrack(sched, playhead);
-    if (!cur) return none;
-    const imgFor = (entry) => {
+    if (!cur) return first;
+    const trackFor = (entry) => {
       if (!entry) return null;
       const idx = t.findIndex(tk => tk.name === entry.name);
-      return (idx >= 0 ? t[idx]?.bgImage : null) || null;
+      return idx >= 0 ? t[idx] : null;
     };
-    const img = imgFor(cur);
-    // transition window = first crossfadeSec seconds of the current entry
     const into = playhead - cur.startOffset;
+    const curRef = { track: trackFor(cur), localT: Math.max(0, into), index: cur.index };
+    // transition window = first crossfadeSec seconds of the current entry
     if (cur.index > 0 && into < crossfadeSec) {
-      return { img, prevImg: imgFor(sched[cur.index - 1]), prog: into / crossfadeSec };
+      const pe = sched[cur.index - 1];
+      return {
+        cur: curRef,
+        prev: { track: trackFor(pe), localT: Math.max(0, playhead - pe.startOffset), index: pe.index },
+        prog: into / crossfadeSec,
+      };
     }
-    return { img, prevImg: null, prog: 1 };
+    return { cur: curRef, prev: null, prog: 1 };
   }, [crossfadeSec]);
+
+  // Live player for a track's clips, created on first use and kept until the
+  // clip list itself changes.
+  const clipPlayerFor = useCallback((track) => {
+    if (!track?.bgClips?.length) return null;
+    const cache = clipPlayersRef.current;
+    let player = cache.get(track.bgClips);
+    if (!player) {
+      player = createClipPreview(track.bgClips);
+      cache.set(track.bgClips, player);
+    }
+    return player;
+  }, []);
+
+  const releaseClipPlayers = useCallback(() => {
+    for (const player of clipPlayersRef.current.values()) player.dispose();
+    clipPlayersRef.current.clear();
+  }, []);
+
+  /* Background layers for one track at its local time, for the real-time
+     paths (preview + legacy MediaRecorder export). Clips come from live
+     <video> elements, so this stays synchronous. */
+  const layersLive = useCallback((ref) => {
+    const track = ref?.track;
+    if (!track) return [];
+    if (track.bgClips?.length) {
+      const cycle = buildClipCycle(track.bgClips, clipXfade);
+      const player = clipPlayerFor(track);
+      return cycle && player ? player.layers(cycle, ref.localT) : [];
+    }
+    const img = track.bgImage;
+    if (!img) return [];
+    return [{ src: img, w: img.naturalWidth || img.width, h: img.naturalHeight || img.height, alpha: 1 }];
+  }, [clipXfade, clipPlayerFor]);
 
   const startPreview = useCallback(() => {
     stopAll();
@@ -340,9 +411,9 @@ export default function App() {
         const mixer = mixerRef.current;
         let playhead = 0;
         if (mixer && audioCtxRef.current) playhead = audioCtxRef.current.currentTime - mixer.mixStart;
-        const bg = getBgForPlayhead(mixer, playhead);
-        if (bg.prog < 1) drawBgTransition(ctx, cw, ch, bg.prevImg, bg.img, bg.prog, bgTransition);
-        else drawBg(ctx, cw, ch, bg.img);
+        const bg = getBgAt(mixer, playhead);
+        if (bg.prog < 1) drawBgTransition(ctx, cw, ch, layersLive(bg.prev), layersLive(bg.cur), bg.prog, bgTransition);
+        else drawBg(ctx, cw, ch, layersLive(bg.cur));
 
         // Bokeh
         if (bokehEnabled) renderBokehSparkle(ctx, cw, ch, elapsed, bands);
@@ -370,7 +441,7 @@ export default function App() {
       fc++; animRef.current = requestAnimationFrame(loop);
     };
     animRef.current = requestAnimationFrame(loop); setPlaying(true);
-  }, [resolution, tracks, crossfadeSec, titleMode, audioName, songTitle, songTitle2, showTitle, titlePos, titleFontSize, titleFontSize2, bokehEnabled, spectrumEnabled, drawCenterPiece, bgTransition, getBgForPlayhead, stopAll]);
+  }, [resolution, tracks, crossfadeSec, titleMode, audioName, songTitle, songTitle2, showTitle, titlePos, titleFontSize, titleFontSize2, bokehEnabled, spectrumEnabled, drawCenterPiece, bgTransition, getBgAt, layersLive, stopAll]);
 
   const handleFiles = useCallback(async (fileList) => {
     const files = Array.from(fileList || []).filter(f =>
@@ -383,7 +454,7 @@ export default function App() {
       try {
         const buffer = await audioCtxRef.current.decodeAudioData(await file.arrayBuffer());
         const cleanName = file.name.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " ");
-        const entry = { name: cleanName, buffer, bpm: 0, fileName: file.name, bgImage: null };
+        const entry = { name: cleanName, buffer, bpm: 0, fileName: file.name, bgImage: null, bgClips: [] };
         setTracks(prev => {
           const next = [...prev, entry];
           if (next.length === 1) { setAudioName(file.name); setSongTitle(cleanName); }
@@ -400,7 +471,10 @@ export default function App() {
   }, []);
 
   const removeTrack = useCallback((idx) => {
-    setTracks(prev => prev.filter((_, i) => i !== idx));
+    setTracks(prev => {
+      for (const clip of prev[idx]?.bgClips || []) URL.revokeObjectURL(clip.url);
+      return prev.filter((_, i) => i !== idx);
+    });
   }, []);
 
   const moveTrack = useCallback((idx, dir) => {
@@ -423,6 +497,53 @@ export default function App() {
     img.src = URL.createObjectURL(file);
   }, []);
 
+  /* Background clips for one track. Each file is probed up front (length,
+     size, poster, and whether this browser can actually decode it) so a bad
+     file is caught here instead of part way through a render. Clips play in
+     list order and the sequence loops for as long as the track plays. */
+  const addTrackClips = useCallback(async (idx, fileList) => {
+    const files = Array.from(fileList || []).filter(f =>
+      f && (f.type.startsWith("video/") || /\.(mp4|mov|webm|m4v|mkv|avi)$/i.test(f.name))
+    );
+    if (!files.length) return;
+    setClipBusy(true); setClipError("");
+    for (const file of files) {
+      try {
+        const info = await probeClip(file);
+        const clip = {
+          file, url: URL.createObjectURL(file),
+          name: file.name.replace(/\.[^/.]+$/, ""),
+          duration: info.duration, width: info.width, height: info.height,
+          poster: info.poster, codec: info.codec,
+        };
+        setTracks(prev => prev.map((t, i) => i === idx ? { ...t, bgClips: [...(t.bgClips || []), clip] } : t));
+      } catch (err) {
+        setClipError(`${file.name}: ${err?.message || err}`);
+      }
+    }
+    setClipBusy(false);
+  }, []);
+
+  const removeTrackClip = useCallback((idx, clipIdx) => {
+    setTracks(prev => prev.map((t, i) => {
+      if (i !== idx) return t;
+      const gone = t.bgClips[clipIdx];
+      if (gone) URL.revokeObjectURL(gone.url);
+      return { ...t, bgClips: t.bgClips.filter((_, j) => j !== clipIdx) };
+    }));
+  }, []);
+
+  const moveTrackClip = useCallback((idx, clipIdx, dir) => {
+    setTracks(prev => prev.map((t, i) => {
+      if (i !== idx) return t;
+      const j = clipIdx + dir;
+      if (j < 0 || j >= t.bgClips.length) return t;
+      const next = [...t.bgClips];
+      [next[clipIdx], next[j]] = [next[j], next[clipIdx]];
+      return { ...t, bgClips: next };
+    }));
+  }, []);
+
   const handleLogoFile = useCallback((file) => {
     if (!file || !file.type.startsWith("image/")) return;
     const img = new Image();
@@ -432,11 +553,13 @@ export default function App() {
 
   // One full frame's worth of drawing — shared by both export paths.
   // ctx/cw/ch is whatever canvas is being encoded; elapsed/playhead/bands/
-  // mixer/totalMs describe the instant being rendered.
-  const drawExportFrame = useCallback((ctx, cw, ch, elapsed, playhead, bands, mixer, totalMs) => {
-    const bg = getBgForPlayhead(mixer, playhead);
-    if (bg.prog < 1) drawBgTransition(ctx, cw, ch, bg.prevImg, bg.img, bg.prog, bgTransition);
-    else drawBg(ctx, cw, ch, bg.img);
+  // mixer/totalMs describe the instant being rendered. `bg` carries the
+  // already-resolved background layers, because the frame-locked path has to
+  // await a video decode to get them while the real-time path cannot await
+  // anything — so each caller resolves them its own way and passes them in.
+  const drawExportFrame = useCallback((ctx, cw, ch, elapsed, playhead, bands, mixer, totalMs, bg) => {
+    if (bg && bg.prog < 1) drawBgTransition(ctx, cw, ch, bg.prev, bg.cur, bg.prog, bgTransition);
+    else drawBg(ctx, cw, ch, bg?.cur);
 
     if (bokehEnabled) renderBokehSparkle(ctx, cw, ch, elapsed, bands);
     drawCenterPiece(ctx, cw, ch, elapsed, bands);
@@ -466,7 +589,7 @@ export default function App() {
         ctx.globalAlpha = 1;
       }
     }
-  }, [getBgForPlayhead, bgTransition, bokehEnabled, drawCenterPiece, spectrumEnabled, songTitle, audioName, titleMode, showTitle, songTitle2, titlePos, titleFontSize, titleFontSize2, endLogo]);
+  }, [bgTransition, bokehEnabled, drawCenterPiece, spectrumEnabled, songTitle, audioName, titleMode, showTitle, songTitle2, titlePos, titleFontSize, titleFontSize2, endLogo]);
 
   // Frame-locked export (WebCodecs/Mediabunny) — draws + encodes each frame
   // at a fixed timestep, decoupled from wall-clock speed. See
@@ -474,6 +597,7 @@ export default function App() {
   const handleExportFrameLocked = useCallback(async () => {
     setExporting(true); setExportProg(0); setExportError(""); stopPreviewOnly();
     exportAbortRef.current = false;
+    let blobOut = null;
     try {
       const [cw, ch] = RES[resolution];
       const readyTracks = tracks.filter(t => t.buffer);
@@ -489,22 +613,67 @@ export default function App() {
       if (visCanvas) { visCanvas.width = cw; visCanvas.height = ch; }
       let lastPreviewUpdate = 0;
 
-      const { blob } = await exportFrameLocked({
-        width: cw, height: ch, fps: 30,
-        tracks: repeated, crossfade: crossfadeSec, fallbackDuration,
-        videoBitrate: BITRATE[resolution] ?? 30_000_000,
-        shouldAbort: () => exportAbortRef.current,
-        onProgress: (frac) => setExportProg(Math.min(100, Math.round(frac * 100))),
-        drawFrame: (ctx, { elapsed, playhead, bands, mixer, totalDuration }) => {
-          drawExportFrame(ctx, cw, ch, elapsed, playhead, bands, mixer, totalDuration * 1000);
-          // Mirror progress onto the visible canvas, throttled — this loop
-          // isn't real-time bound so it can run far faster than 30fps.
-          if (visCtx && elapsed - lastPreviewUpdate > 200) {
-            lastPreviewUpdate = elapsed;
-            visCtx.drawImage(ctx.canvas, 0, 0);
-          }
-        },
-      });
+      /* A clip background has to be DECODED here rather than played, and each
+         schedule entry needs its own decoder (see getBgAt). They're opened on
+         first use and closed as soon as the render passes them, so at most two
+         are ever live no matter how long the playlist is. */
+      const decoders = new Map();
+      const decoderFor = async (ref) => {
+        let dec = decoders.get(ref.index);
+        if (!dec) {
+          dec = await createClipDecoder(ref.track.bgClips, { width: cw, height: ch });
+          decoders.set(ref.index, dec);
+        }
+        return dec;
+      };
+      const closeDecodersBefore = async (index) => {
+        for (const [k, dec] of [...decoders]) {
+          if (k < index) { decoders.delete(k); await dec.dispose(); }
+        }
+      };
+      const layersFor = async (ref) => {
+        const track = ref?.track;
+        if (!track) return [];
+        if (track.bgClips?.length) {
+          const cycle = buildClipCycle(track.bgClips, clipXfade);
+          if (!cycle) return [];
+          return await (await decoderFor(ref)).layers(cycle, ref.localT);
+        }
+        const img = track.bgImage;
+        if (!img) return [];
+        return [{ src: img, w: img.naturalWidth || img.width, h: img.naturalHeight || img.height, alpha: 1 }];
+      };
+
+      try {
+        const { blob } = await exportFrameLocked({
+          width: cw, height: ch, fps: 30,
+          tracks: repeated, crossfade: crossfadeSec, fallbackDuration,
+          videoBitrate: BITRATE[resolution] ?? 30_000_000,
+          shouldAbort: () => exportAbortRef.current,
+          onProgress: (frac) => setExportProg(Math.min(100, Math.round(frac * 100))),
+          drawFrame: async (ctx, { elapsed, playhead, bands, mixer, totalDuration }) => {
+            const at = getBgAt(mixer, playhead);
+            const bg = {
+              prog: at.prog,
+              prev: at.prev ? await layersFor(at.prev) : null,
+              cur: await layersFor(at.cur),
+            };
+            await closeDecodersBefore((at.prev || at.cur)?.index ?? 0);
+            drawExportFrame(ctx, cw, ch, elapsed, playhead, bands, mixer, totalDuration * 1000, bg);
+            // Mirror progress onto the visible canvas, throttled — this loop
+            // isn't real-time bound so it can run far faster than 30fps.
+            if (visCtx && elapsed - lastPreviewUpdate > 200) {
+              lastPreviewUpdate = elapsed;
+              visCtx.drawImage(ctx.canvas, 0, 0);
+            }
+          },
+        });
+        blobOut = blob;
+      } finally {
+        for (const dec of decoders.values()) await dec.dispose();
+        decoders.clear();
+      }
+      const blob = blobOut;
 
       const fname = `${(songTitle || "storybook").replace(/\s+/g, "-")}.webm`;
       downloadBlobRef.current = { blob, name: fname };
@@ -522,7 +691,7 @@ export default function App() {
     } finally {
       setExporting(false);
     }
-  }, [loops, resolution, tracks, crossfadeSec, songTitle, drawExportFrame, stopPreviewOnly]);
+  }, [loops, resolution, tracks, crossfadeSec, songTitle, clipXfade, getBgAt, drawExportFrame, stopPreviewOnly]);
 
   // Legacy export — MediaRecorder + canvas.captureStream on a real-time
   // wall clock. Kept as a fallback for browsers without WebCodecs support
@@ -587,7 +756,11 @@ export default function App() {
           const bands = analyzeBands(analyser, sampleRate);
           let playhead = 0;
           if (mixer && audioCtxRef.current) playhead = audioCtxRef.current.currentTime - mixer.mixStart;
-          drawExportFrame(octx, cw, ch, elapsed, playhead, bands, mixer, totalMs);
+          // This path records in real time, so clip backgrounds come from the
+          // same live <video> players the preview uses.
+          const at = getBgAt(mixer, playhead);
+          const bg = { prog: at.prog, prev: at.prev ? layersLive(at.prev) : null, cur: layersLive(at.cur) };
+          drawExportFrame(octx, cw, ch, elapsed, playhead, bands, mixer, totalMs, bg);
           // Live audio fade (the shared draw fn only handles the visual fade).
           const remaining = totalMs - elapsed;
           if (exportGain && remaining < 15000) exportGain.gain.value = remaining / 15000;
@@ -618,7 +791,7 @@ export default function App() {
     } finally {
       setExporting(false); exportTimerRef.current = null;
     }
-  }, [loops, resolution, tracks, crossfadeSec, songTitle, drawExportFrame, stopPreviewOnly]);
+  }, [loops, resolution, tracks, crossfadeSec, songTitle, getBgAt, layersLive, drawExportFrame, stopPreviewOnly]);
 
   // Use frame-locked (WebCodecs) export when the browser supports it —
   // falls back to the real-time MediaRecorder path otherwise.
@@ -635,6 +808,18 @@ export default function App() {
   // was killed mid-render (aborted, tab closed) that file is orphaned. Clear
   // those out at startup, before this session creates one of its own.
   useEffect(() => { sweepExportScratch(); }, []);
+
+  useEffect(() => () => releaseClipPlayers(), [releaseClipPlayers]);
+
+  // Drop the player for any clip list no longer held by a track (clip removed
+  // or reordered, track deleted), so its <video> elements let go of their
+  // decoders instead of lingering for the session.
+  useEffect(() => {
+    const live = new Set(tracks.map(t => t.bgClips).filter(Boolean));
+    for (const [key, player] of [...clipPlayersRef.current]) {
+      if (!live.has(key)) { player.dispose(); clipPlayersRef.current.delete(key); }
+    }
+  }, [tracks]);
 
   useEffect(() => {
     if (step === 2 && canvasRef.current) {
@@ -720,31 +905,96 @@ export default function App() {
                       {t.bpm ? ` · ${t.bpm} BPM` : " · BPM …"}
                     </div>
 
-                    {/* Row 3: background image */}
-                    <div style={{ marginTop: 10, paddingLeft: 30, display: "flex", alignItems: "center", gap: 10 }}>
-                      <button
-                        onClick={e => {
-                          e.stopPropagation();
-                          const inp = document.createElement("input"); inp.type = "file"; inp.accept = "image/*";
-                          inp.onchange = ev => ev.target.files[0] && setTrackBg(i, ev.target.files[0]);
-                          inp.click();
-                        }}
-                        style={{ background: "rgba(8,6,4,0.8)", border: "1px solid " + (t.bgImage ? gold(0.3) : "#1E1C18"), color: t.bgImage ? gold(0.7) : "#9A948C", padding: "5px 14px", borderRadius: 6, fontSize: 13, fontFamily: "'Sarabun'", cursor: "pointer", flexShrink: 0 }}>
-                        {t.bgImage ? "🖼 เปลี่ยนรูป" : "+ เพิ่มรูปพื้นหลัง"}
-                      </button>
-                      {t.bgImage && (
-                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <img src={t.bgImage.src} alt="bg" style={{ height: 36, width: 64, objectFit: "cover", borderRadius: 4, border: "1px solid " + gold(0.3) }} />
-                          <button onClick={e => { e.stopPropagation(); setTracks(prev => prev.map((tk, j) => j === i ? { ...tk, bgImage: null } : tk)); }}
-                            style={{ background: "none", border: "none", color: "#6A6050", cursor: "pointer", fontSize: 13 }}>✕</button>
+                    {/* Row 3: background — a still image, or video clips that
+                        loop (with a crossfade) for as long as the song plays */}
+                    <div style={{ marginTop: 10, paddingLeft: 30 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                        <button
+                          onClick={e => {
+                            e.stopPropagation();
+                            const inp = document.createElement("input"); inp.type = "file"; inp.accept = "image/*";
+                            inp.onchange = ev => ev.target.files[0] && setTrackBg(i, ev.target.files[0]);
+                            inp.click();
+                          }}
+                          style={{ background: "rgba(8,6,4,0.8)", border: "1px solid " + (t.bgImage ? gold(0.3) : "#1E1C18"), color: t.bgImage ? gold(0.7) : "#9A948C", padding: "5px 14px", borderRadius: 6, fontSize: 13, fontFamily: "'Sarabun'", cursor: "pointer", flexShrink: 0, opacity: t.bgClips?.length ? 0.45 : 1 }}>
+                          {t.bgImage ? "🖼 เปลี่ยนรูป" : "+ เพิ่มรูปพื้นหลัง"}
+                        </button>
+                        {t.bgImage && (
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <img src={t.bgImage.src} alt="bg" style={{ height: 36, width: 64, objectFit: "cover", borderRadius: 4, border: "1px solid " + gold(0.3), opacity: t.bgClips?.length ? 0.45 : 1 }} />
+                            <button onClick={e => { e.stopPropagation(); setTracks(prev => prev.map((tk, j) => j === i ? { ...tk, bgImage: null } : tk)); }}
+                              style={{ background: "none", border: "none", color: "#6A6050", cursor: "pointer", fontSize: 13 }}>✕</button>
+                          </div>
+                        )}
+                        <button
+                          onClick={e => {
+                            e.stopPropagation();
+                            const inp = document.createElement("input"); inp.type = "file"; inp.accept = "video/*"; inp.multiple = true;
+                            inp.onchange = ev => addTrackClips(i, ev.target.files);
+                            inp.click();
+                          }}
+                          disabled={clipBusy}
+                          style={{ background: "rgba(8,6,4,0.8)", border: "1px solid " + (t.bgClips?.length ? gold(0.3) : "#1E1C18"), color: t.bgClips?.length ? gold(0.7) : "#9A948C", padding: "5px 14px", borderRadius: 6, fontSize: 13, fontFamily: "'Sarabun'", cursor: clipBusy ? "default" : "pointer", flexShrink: 0, opacity: clipBusy ? 0.5 : 1 }}>
+                          {clipBusy ? "กำลังอ่านคลิป…" : (t.bgClips?.length ? "🎬 เพิ่มคลิปอีก" : "+ เพิ่มคลิปวิดีโอ")}
+                        </button>
+                        {!t.bgImage && !t.bgClips?.length && (
+                          <span style={{ fontSize: 12, color: "#5A5448", fontFamily: "'Sarabun'" }}>ไม่มีพื้นหลัง — จอดำ</span>
+                        )}
+                      </div>
+
+                      {!!t.bgClips?.length && (
+                        <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+                          {t.bgClips.map((clip, ci) => (
+                            <div key={clip.url} style={{ display: "flex", alignItems: "center", gap: 8, background: "rgba(8,6,4,0.6)", border: "1px solid #14120F", borderRadius: 6, padding: 6 }}>
+                              <span style={{ fontSize: 11, color: gold(0.5), width: 16, textAlign: "center", flexShrink: 0 }}>{ci + 1}</span>
+                              {clip.poster
+                                ? <img src={clip.poster} alt="" style={{ height: 32, width: 56, objectFit: "cover", borderRadius: 3, flexShrink: 0 }} />
+                                : <div style={{ height: 32, width: 56, borderRadius: 3, background: "#14120F", flexShrink: 0 }} />}
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: 12, color: "#C8C4BE", fontFamily: "'Sarabun'", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{clip.name}</div>
+                                <div style={{ fontSize: 10, color: "#6A6050", fontFamily: "'Sarabun'" }}>
+                                  {Math.floor(clip.duration / 60)}:{String(Math.floor(clip.duration % 60)).padStart(2, "0")} · {clip.width}×{clip.height}
+                                </div>
+                              </div>
+                              <button onClick={e => { e.stopPropagation(); moveTrackClip(i, ci, -1); }} disabled={ci === 0}
+                                style={{ background: "none", border: "none", color: ci === 0 ? "#3A342A" : gold(0.6), cursor: ci === 0 ? "default" : "pointer", fontSize: 12, padding: "2px 4px" }}>▲</button>
+                              <button onClick={e => { e.stopPropagation(); moveTrackClip(i, ci, 1); }} disabled={ci === t.bgClips.length - 1}
+                                style={{ background: "none", border: "none", color: ci === t.bgClips.length - 1 ? "#3A342A" : gold(0.6), cursor: ci === t.bgClips.length - 1 ? "default" : "pointer", fontSize: 12, padding: "2px 4px" }}>▼</button>
+                              <button onClick={e => { e.stopPropagation(); removeTrackClip(i, ci); }}
+                                style={{ background: "none", border: "none", color: "#8A5A5A", cursor: "pointer", fontSize: 12, padding: "2px 5px" }}>✕</button>
+                            </div>
+                          ))}
+                          <div style={{ fontSize: 11, color: "#5A5448", fontFamily: "'Sarabun'" }}>
+                            {t.bgClips.length === 1
+                              ? "คลิปนี้จะวนลูปไปจนจบเพลง (มี crossfade ตอนวนกลับ)"
+                              : `${t.bgClips.length} คลิปเล่นต่อกันแล้ววนลูปไปจนจบเพลง`}
+                            {t.bgImage ? " · ใช้คลิปแทนรูปพื้นหลัง" : ""}
+                          </div>
                         </div>
-                      )}
-                      {!t.bgImage && (
-                        <span style={{ fontSize: 12, color: "#5A5448", fontFamily: "'Sarabun'" }}>ไม่มีรูป — พื้นหลังดำ</span>
                       )}
                     </div>
                   </div>
                 ))}
+
+                {clipError && (
+                  <div style={{ marginTop: 10, background: "rgba(200,80,80,0.06)", border: "1px solid rgba(200,80,80,0.25)", borderRadius: 6, padding: "8px 12px", fontSize: 12, color: "#C8928C", fontFamily: "'Sarabun'", display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ flex: 1 }}>เพิ่มคลิปไม่ได้ — {clipError}</span>
+                    <button onClick={() => setClipError("")} style={{ background: "none", border: "none", color: "#8A5A5A", cursor: "pointer", fontSize: 12 }}>✕</button>
+                  </div>
+                )}
+
+                {/* Clip sequence crossfade — applies to every track's clips */}
+                {tracks.some(t => t.bgClips?.length) && (
+                  <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid #14120F" }}>
+                    <label style={{ fontSize: 13, color: "#9A948C", fontFamily: "'Sarabun'", fontWeight: 200, display: "block", marginBottom: 6 }}>
+                      Crossfade ระหว่างคลิป ({clipXfade.toFixed(1)}s){clipXfade === 0 ? " · ตัดแข็ง" : ""}
+                    </label>
+                    <input type="range" min={0} max={5} step={0.5} value={clipXfade} onChange={e => setClipXfade(Number(e.target.value))} style={{ width: "100%", accentColor: "#D4AF37", cursor: "pointer" }} />
+                    <div style={{ fontSize: 11, color: "#5A5448", fontFamily: "'Sarabun'", marginTop: 4 }}>
+                      ถ้าคลิปสั้นกว่า crossfade × 2 ระบบจะลดค่าให้พอดีกับคลิปที่สั้นที่สุดเอง
+                    </div>
+                  </div>
+                )}
 
                 {/* Crossfade */}
                 {tracks.length > 1 && (
